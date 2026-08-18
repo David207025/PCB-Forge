@@ -1,0 +1,20 @@
+[package]
+name = "api"
+version = "1.0.0"
+edition = "2024"
+repository = "https://github.com/David207025/PCB-Forge.git"
+authors = ["David207025"]
+
+[package.metadata.wix]
+upgrade-guid = "61493CE6-9B9A-4E7E-BFBD-FCAE378ED36F"
+path-guid = "654E5F75-1439-49AC-B81F-BFA57EC704F1"
+license = false
+eula = false
+
+[[bin]]
+name = "pcbfapi"
+path = "src/main.rs"
+
+[dependencies]
+
+
