@@ -2,12 +2,19 @@
 name = "cli"
 version = "1.0.0"
 edition = "2024"
+repository = "https://github.com/David207025/PCB-Forge.git"
+authors = ["David207025"]
 
 [[bin]]
 name = "pcbfcli"
 path = "src/main.rs"
 
 [dependencies]
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
 
 [package.metadata.packager]
 name = "pcbfcli"
@@ -16,3 +23,9 @@ identifier = "com.pcbforge.cli"
 version = "1.0.0"
 out-dir = "dist"
 before-packaging-command = "cargo build --release"
+
+[package.metadata.wix]
+upgrade-guid = "F53FB389-724D-474F-A3B0-DBCEFF7096F8"
+path-guid = "0B2D03D3-0FD9-49CE-A279-DDD7B7C29FA2"
+license = false
+eula = false
