@@ -1,0 +1,13 @@
+FROM rust:latest
+
+# Install system dependencies, MinGW for Windows cross-compilation, and NSIS for Windows installers
+RUN apt-get update && apt-get install -y \
+    mingw-w64 \
+    nsis \
+    libssl-dev \
+    pkg-config
+
+# Install cargo-packager
+RUN cargo install cargo-packager --locked
+
+WORKDIR /app

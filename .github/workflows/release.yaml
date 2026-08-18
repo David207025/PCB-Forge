@@ -1,0 +1,41 @@
+name: Build and Release CLI Installers
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers automatically whenever you push a version tag (e.g., v0.1.0)
+
+jobs:
+  release-installers:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            format: dmg
+          - os: windows-latest
+            format: nsis
+          - os: ubuntu-latest
+            format: deb,appimage
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      - name: Build and Package
+        working-directory: ./cli
+        run: cargo packager --release --formats ${{ matrix.format }}
+
+      - name: Upload Installers to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: cli/dist/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,18 @@
+[package]
+name = "cli"
+version = "1.0.0"
+edition = "2024"
+
+[[bin]]
+name = "pcbfcli"
+path = "src/main.rs"
+
+[dependencies]
+
+[package.metadata.packager]
+name = "pcbfcli"
+product-name = "PCB Forge CLI"
+identifier = "com.pcbforge.cli"
+version = "1.0.0"
+out-dir = "dist"
+before-packaging-command = "cargo build --release"

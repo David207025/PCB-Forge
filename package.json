@@ -1,0 +1,22 @@
+{
+  "name": "pcb-forge",
+  "version": "1.0.0",
+  "description": "",
+  "homepage": "https://github.com/David207025/PCB-Forge#readme",
+  "bugs": {
+    "url": "https://github.com/David207025/PCB-Forge/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/David207025/PCB-Forge.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "package-extension.js",
+  "scripts": {
+    "build:webview": "npm --prefix extension/webview-ui run build",
+    "compile:extension": "npm --prefix extension run compile",
+    "package": "node package-extension.js"
+  }
+}

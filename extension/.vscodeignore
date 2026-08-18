@@ -1,0 +1,15 @@
+# Exclude extension source and configs
+src/
+tsconfig.json
+
+# Exclude Web-UI source code, configs, and heavy node_modules (keep only dist/)
+web-ui/src/
+web-ui/node_modules/
+web-ui/tsconfig*.json
+web-ui/vite.config.ts
+web-ui/.gitignore
+web-ui/.oxlintrc.json
+
+# General build/git ignores
+.git*
+.vscode*

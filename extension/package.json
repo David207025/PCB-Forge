@@ -1,0 +1,36 @@
+{
+  "name": "pcb-forge",
+  "displayName": "PCB Forge",
+  "description": "Next-gen PCB design tool for VS Code",
+  "version": "1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/David207025/PCB-Forge.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.89.0"
+  },
+  "activationEvents": [
+    "onCommand:pcb-forge.openEditor"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pcb-forge.openEditor",
+        "title": "Open PCB Forge Editor"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/vscode": "^1.89.0",
+    "typescript": "^5.5.3"
+  }
+}

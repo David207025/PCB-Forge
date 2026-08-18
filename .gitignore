@@ -1,0 +1,21 @@
+# Build and packaging outputs
+/build/
+*.vsix
+
+# Node modules across the monorepo
+/node_modules/
+/extension/node_modules/
+/extension/web-ui/node_modules/
+
+# Compiled frontend and extension outputs
+/extension/web-ui/dist/
+/extension/out/
+/extension/binaries/
+
+# Rust CLI build artifacts
+/cli/target/
+
+# IDE and OS specific files
+.DS_Store
+Thumbs.db
+.vscode/
