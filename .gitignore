@@ -13,7 +13,7 @@
 /extension/binaries/
 
 # Rust CLI build artifacts
-/cli/target/
+/target
 
 # IDE and OS specific files
 .DS_Store
