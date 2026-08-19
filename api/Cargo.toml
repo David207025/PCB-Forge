@@ -4,6 +4,8 @@ version = "1.0.0"
 edition = "2024"
 repository = "https://github.com/David207025/PCB-Forge.git"
 authors = ["David207025"]
+description = "PCBF API is the background task used by the PCB-Forge VS-Code extension. This API manages the PDF creation and BOM storage/generation"
+homepage = "https://github.com/David207025/PCB-Forge.git"
 
 [package.metadata.wix]
 upgrade-guid = "61493CE6-9B9A-4E7E-BFBD-FCAE378ED36F"

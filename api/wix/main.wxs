@@ -69,6 +69,7 @@
 
         <Package Id='*'
             Keywords='Installer'
+            Description='PCBF API is the background task used by the PCB-Forge VS-Code extension. This API manages the PDF creation and BOM storage/generation'
             Manufacturer='David207025'
             InstallerVersion='450'
             Languages='1033'
