@@ -5,3 +5,7 @@ members = ["api"]
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[workspace.metadata.dist]
+# Ensure "pkg" or "dmg" are listed here alongside shell/powershell/msi
+installers = ["shell", "powershell", "msi", "pkg"]
