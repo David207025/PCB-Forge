@@ -1,5 +1,5 @@
 [package]
-name = "api"
+name = "pcbfapi"
 version = "1.0.0"
 edition = "2024"
 repository = "https://github.com/David207025/PCB-Forge.git"

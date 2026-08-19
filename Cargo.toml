@@ -1,5 +1,5 @@
 [workspace]
-members = ["api"]
+members = ["pcbfapi"]
 
 # The profile that 'dist' will build with
 [profile.dist]

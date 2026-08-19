@@ -3,11 +3,11 @@
 # Exit immediately if any command fails
 set -e
 
-# 1. Extract the version from api/Cargo.toml
-VERSION=$(grep -m 1 '^version = ' api/Cargo.toml | cut -d '"' -f 2)
+# 1. Extract the version from pcbapi/Cargo.toml
+VERSION=$(grep -m 1 '^version = ' pcbfapi/Cargo.toml | cut -d '"' -f 2)
 
 if [ -z "$VERSION" ]; then
-  echo "❌ Could not find version in api/Cargo.toml"
+  echo "❌ Could not find version in pcbfapi/Cargo.toml"
   exit 1
 fi
 
