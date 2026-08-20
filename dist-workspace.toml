@@ -15,7 +15,7 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msv
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
-
-[dist.homebrew]
+# A GitHub repo to push Homebrew formulas to
 tap = "David207025/homebrew-pcb-forge"
-publish = true
+# Publish jobs to run in CI
+publish-jobs = ["homebrew"]
