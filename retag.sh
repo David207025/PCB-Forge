@@ -38,13 +38,14 @@ BIN_NAME="pcbfapi"
 echo "🐳 Building Linux targets inside Docker container..."
 docker build -f Dockerfile.build -t pcb-builder-linux .
 
-docker run --rm -v "$(pwd)":/app -e PKG_CONFIG_ALLOW_CROSS=1 pcb-builder-linux cargo build --release
-
+# Build x86_64 Linux
+docker run --rm -v "$(pwd)":/app -e PKG_CONFIG_ALLOW_CROSS=1 pcb-builder-linux cargo build --release --target x86_64-unknown-linux-gnu
 tar -czf "$DIST_DIR/${BIN_NAME}-${TAG}-x86_64-unknown-linux-gnu.tar.gz" -C target/x86_64-unknown-linux-gnu/release "$BIN_NAME"
 
-# Build aarch64 Linux (if your Docker host supports emulation, e.g., Apple Silicon)
-docker run --rm --platform linux/arm64 -v "$(pwd)":/app pcb-builder-linux cargo build --release --target aarch64-unknown-linux-gnu
+# Build aarch64 Linux
+docker run --rm -v "$(pwd)":/app -e PKG_CONFIG_ALLOW_CROSS=1 pcb-builder-linux cargo build --release --target aarch64-unknown-linux-gnu
 tar -czf "$DIST_DIR/${BIN_NAME}-${TAG}-aarch64-unknown-linux-gnu.tar.gz" -C target/aarch64-unknown-linux-gnu/release "$BIN_NAME"
+
 
 # 5. Build macOS targets natively on your Mac
 echo "🍏 Building macOS targets natively..."
