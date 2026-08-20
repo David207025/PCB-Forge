@@ -19,3 +19,4 @@ install-updater = false
 tap = "David207025/homebrew-pcb-forge"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
+token = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
