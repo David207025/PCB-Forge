@@ -30,6 +30,16 @@ struct StatusPayload {
 
 #[tokio::main]
 async fn main() {
+  #[cfg(target_os = "macos")]
+  {
+    use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy::*};
+    unsafe {
+      let app = NSApp();
+      // Accessory = runs in background, no dock icon, no main menu bar
+      app.setActivationPolicy_(NSApplicationActivationPolicyAccessory);
+    }
+  }
+  
   // 1. Initialize Tao Event Loop with custom user events
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let proxy = event_loop.create_proxy();

@@ -1998,7 +1998,9 @@ name = "pcbfapi"
 version = "0.3.0"
 dependencies = [
  "axum",
+ "cocoa",
  "image",
+ "objc",
  "serde",
  "serde_json",
  "tao",
