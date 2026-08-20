@@ -1,4 +1,5 @@
 {
+  "publisher": "vacaroiudavid",
   "name": "pcb-forge",
   "displayName": "PCB Forge",
   "description": "Next-gen PCB design tool for VS Code",
@@ -17,12 +18,39 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pcb-forge-container",
+          "title": "PCB Forge",
+          "icon": "images/icon.png"
+        }
+      ]
+    },
+    "views": {
+      "pcb-forge-container": [
+        {
+          "id": "pcbForgeControlPanel",
+          "name": "Control Panel"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "pcb-forge.openEditor",
-        "title": "Open PCB Forge Editor"
+        "command": "pcb-forge.openDashboard",
+        "title": "Open Web Dashboard",
+        "icon": "$(dashboard)"
       }
-    ]
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "pcb-forge.openDashboard",
+          "when": "view == pcbForgeControlPanel",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
