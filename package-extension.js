@@ -16,29 +16,48 @@ function run(command, cwd) {
 }
 
 try {
-  console.log('🚀 Starting PCB Forge Packaging (Skipping local CLI builds)...');
+  console.log('🚀 Starting PCB Forge Packaging Pipeline...');
 
-  // 1. Build React Web UI
+  // 0. Extract version dynamically from extension/package.json
+  const extensionPkgPath = path.join(extensionDir, 'package.json');
+  if (!fs.existsSync(extensionPkgPath)) {
+    throw new Error(`Could not find extension package.json at ${extensionPkgPath}`);
+  }
+  const extensionPkg = JSON.parse(fs.readFileSync(extensionPkgPath, 'utf8'));
+  const version = extensionPkg.version;
+  console.log(`📦 Detected Extension Version: v${version}`);
+
+  // 1. Run the Python icon generation script from the root directory
+  console.log('\n🎨 Generating crisp icons using Python script...');
+  const pythonScriptPath = path.join(rootDir, 'generate_icons.py');
+
+  if (fs.existsSync(pythonScriptPath)) {
+    run(`python3 ${pythonScriptPath}`, rootDir);
+  } else {
+    console.warn(`⚠️ Warning: Python script not found at ${pythonScriptPath}. Skipping icon generation.`);
+  }
+
+  // 2. Build React Web UI
   if (fs.existsSync(path.join(webviewDir, 'package.json'))) {
     run('npm install', webviewDir);
     run('npm run build', webviewDir);
   }
 
-  // 2. Compile Extension TypeScript
+  // 3. Compile Extension TypeScript
   if (fs.existsSync(path.join(extensionDir, 'package.json'))) {
     run('npm install', extensionDir);
     run('npm run compile', extensionDir);
   }
 
-  // 3. Package extension into build/
+  // 4. Package extension into build/ with the dynamic version
   if (!fs.existsSync(buildDir)) {
     fs.mkdirSync(buildDir, {recursive: true});
   }
 
-  const outputPath = path.join(buildDir, 'pcb-forge-0.1.0.vsix');
+  const outputPath = path.join(buildDir, `pcb-forge-${version}.vsix`);
   run(`npx @vscode/vsce package --out "${outputPath}"`, extensionDir);
 
-  console.log(`\n✅ SUCCESS: Extension packaged at: build/pcb-forge-0.1.0.vsix`);
+  console.log(`\n✅ SUCCESS: Extension packaged at: build/pcb-forge-${version}.vsix`);
 } catch (err) {
   console.error('\n❌ Packaging failed:', err.message);
   process.exit(1);

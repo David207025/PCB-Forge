@@ -1,6 +1,6 @@
 [package]
 name = "pcbfapi"
-version = "1.0.0"
+version = "0.3.0"
 edition = "2024"
 repository = "https://github.com/David207025/PCB-Forge.git"
 authors = ["David207025"]
@@ -18,5 +18,11 @@ name = "pcbfapi"
 path = "src/main.rs"
 
 [dependencies]
-
+axum = "0.7"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tray-icon = "0.19"
+tao = "0.30"
+image = "0.25" # <-- Add this for loading JPEG/PNG
 
