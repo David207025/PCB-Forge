@@ -3,71 +3,80 @@
 # Exit immediately if any command fails
 set -e
 
-# 1. Extract full GitHub repository URL from package.json or git remote
+# 1. Extract the exact repository URL from package.json using Node.js for clean JSON parsing
 REPO_URL=""
 
 if [ -f "package.json" ]; then
-  echo "🔍 Parsing repository URL from package.json..."
-  REPO_URL=$(grep -m 1 '"repository"' package.json | grep -oE 'https://github.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+|git@[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+' || true)
+  echo "🔍 Reading repository URL from package.json..."
+  REPO_URL=$(node -e '
+    try {
+      const pkg = require("./package.json");
+      let repo = pkg.repository;
+      if (typeof repo === "object" && repo !== null) repo = repo.url;
+      if (typeof repo === "string") console.log(repo.trim());
+    } catch (e) {}
+  ' || true)
 fi
 
-# Fallback to git remote if package.json didn't provide a valid URL
 if [ -z "$REPO_URL" ]; then
-  echo "🔍 Parsing repository URL from git remote..."
+  echo "🔍 Reading repository URL from git remote..."
   REPO_URL=$(git config --get remote.origin.url || true)
 fi
 
 if [ -z "$REPO_URL" ]; then
-    echo "❌ Could not automatically determine the repository URL from package.json or git remote."
-    exit 1
+  echo "❌ Could not find repository URL in package.json or git remote."
+  exit 1
 fi
+
+# Strip git+ prefix if present
+REPO_URL=$(echo "$REPO_URL" | sed 's/^git+//')
 
 # Clean up trailing .git if present
 REPO_URL=$(echo "$REPO_URL" | sed 's/\.git$//')
 
-# Convert SSH URLs (git@github.com:user/repo) to HTTPS format if needed
+# Convert SSH URLs (git@github.com:user/repo) to HTTPS format
 if [[ "$REPO_URL" == git@* ]]; then
   REPO_URL=$(echo "$REPO_URL" | sed 's/:/\//' | sed 's/git@/https:\/\//')
 fi
 
-# Extract components for Homebrew/Formula use
+# Extract user/repo components safely
 CLEAN_PATH=$(echo "$REPO_URL" | sed -E 's/https:\/\/github.com\///')
 GITHUB_USER=$(echo "$CLEAN_PATH" | cut -d '/' -f 1)
 GITHUB_REPO=$(echo "$CLEAN_PATH" | cut -d '/' -f 2)
-FORMULA_NAME="$GITHUB_REPO"
+
+# Homebrew requires formula names to be lowercase
+FORMULA_NAME=$(echo "$GITHUB_REPO" | tr '[:upper:]' '[:lower:]')
 TAP_NAME="homebrew-tap"
 
-echo "🎯 Target Repository URL: $REPO_URL"
+# Extract version from Cargo.toml to point to the specific release tag
+VERSION=$(grep -m 1 '^version = ' pcbfapi/Cargo.toml | cut -d '"' -f 2)
+TAG="v$VERSION"
 
-# 2. Homebrew setup and installation script execution
-echo -e "\n🚀 Checking for Homebrew..."
+echo "🎯 Repository: $REPO_URL"
+echo "📦 Version Tag: $TAG"
+echo "🏷️  Formula Name: $FORMULA_NAME"
 
-# Install Homebrew if it isn't already installed on macOS/Linux
+# 2. Ensure Homebrew is available
 if ! command -v brew &> /dev/null; then
     echo "📦 Homebrew not found. Installing Homebrew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-    # Configure Homebrew path for Apple Silicon or Linux if necessary
     if [[ "$OSTYPE" == "darwin"* ]] && [[ $(uname -m) == "arm64" ]]; then
-        echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zshrc
         eval "$(/opt/homebrew/bin/brew shellenv)"
     elif [[ -d /home/linuxbrew/.linuxbrew ]]; then
-        echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
         eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
     fi
-else
-    echo "✅ Homebrew is already installed."
 fi
 
-echo -e "\n📡 Tapping custom repository: ${GITHUB_USER}/${TAP_NAME}..."
-brew tap "${GITHUB_USER}/${TAP_NAME}"
+# 3. Tap using the custom URL format and install the formula
+echo "📡 Tapping repository via custom URL..."
+brew tap "${GITHUB_USER}/${TAP_NAME}" "$REPO_URL"
 
-echo -e "\n📥 Pulling and installing ${FORMULA_NAME} from GitHub..."
-# If it's already installed, upgrade it; otherwise, install it fresh
+echo "📥 Installing formula..."
 if brew list --formula | grep -q "^${FORMULA_NAME}$"; then
     brew upgrade "${FORMULA_NAME}"
 else
     brew install "${GITHUB_USER}/${TAP_NAME}/${FORMULA_NAME}"
 fi
 
-echo -e "\n✨ SUCCESS: ${FORMULA_NAME} is successfully installed and ready to use!"
+echo "✨ SUCCESS: Installed successfully!"
