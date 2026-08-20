@@ -38,7 +38,7 @@ BIN_NAME="pcbfapi"
 echo "🐳 Building Linux targets inside Docker container..."
 docker build -f Dockerfile.build -t pcb-builder-linux .
 
-docker run --rm -v "$(pwd)":/app -e PKG_CONFIG_ALLOW_CROSS=1 pcb-builder-linux cargo build --release^
+docker run --rm -v "$(pwd)":/app -e PKG_CONFIG_ALLOW_CROSS=1 pcb-builder-linux cargo build --release
 
 tar -czf "$DIST_DIR/${BIN_NAME}-${TAG}-x86_64-unknown-linux-gnu.tar.gz" -C target/x86_64-unknown-linux-gnu/release "$BIN_NAME"
 
