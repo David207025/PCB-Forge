@@ -13,8 +13,6 @@ path-guid = "654E5F75-1439-49AC-B81F-BFA57EC704F1"
 license = false
 eula = false
 
-
-
 [[bin]]
 name = "pcbfapi"
 path = "src/main.rs"
@@ -27,7 +25,6 @@ serde_json = "1.0"
 tray-icon = "0.19"
 tao = "0.30"
 image = "0.25"
-cocoa = "0.26.1" # <-- Add this for loading JPEG/PNG
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
