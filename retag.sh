@@ -15,77 +15,52 @@ TAG="v$VERSION"
 echo "📦 Found version: $VERSION"
 echo "🏷️  Managing tag: $TAG"
 
-# 2. Push current code changes to main first
-echo "📤 Staging and pushing latest code changes to GitHub..."
+# 2. Push code & manage git tags
+echo "📤 Pushing latest code changes to GitHub..."
 git add .
-
-# Check if there are actually changes to commit
-if git diff-index --quiet HEAD --; then
-  echo "ℹ️  No uncommitted changes found, skipping commit."
-else
-  echo "💬 Enter your commit message (or press Enter for default):"
-  read -r COMMIT_MSG
-  if [ -z "$COMMIT_MSG" ]; then
-    COMMIT_MSG="chore: release $TAG"
-  fi
-  git commit -m "$COMMIT_MSG"
+if ! git diff-index --quiet HEAD --; then
+  git commit -m "chore: release $TAG"
 fi
-
 git push origin main
 
-# 3. Delete old tags (ignores errors if the tag doesn't exist yet)
-echo "🗑️  Deleting old local tag..."
 git tag -d "$TAG" 2>/dev/null || true
-
-echo "☁️  Deleting old remote tag..."
 git push --delete origin "$TAG" 2>/dev/null || true
 
-# 4. Create and push new tag on the current commit
-echo "✨ Creating new tag $TAG on current commit..."
 git tag "$TAG"
 git push origin "$TAG"
 
-# 5. Build targets locally using cargo-zigbuild
-echo "🔨 Building targets with cargo-zigbuild..."
-TARGETS=(
-  "aarch64-apple-darwin"
-  "x86_64-apple-darwin"
-  "aarch64-unknown-linux-gnu"
-  "x86_64-unknown-linux-gnu"
-  "x86_64-pc-windows-gnu" # Using -gnu for windows via zigbuild avoids MSVC toolchain requirements on Mac
-)
-
-for target in "${TARGETS[@]}"; do
-  echo "🚀 Compiling for $target..."
-  cargo zigbuild --release --target "$target"
-done
-
-# 6. Package artifacts into a dist folder
+# 3. Prepare distribution folder
 DIST_DIR="target/distrib"
 mkdir -p "$DIST_DIR"
+BIN_NAME="pcbfapi"
 
-echo "📦 Packaging artifacts..."
-for target in "${TARGETS[@]}"; do
-  # Adjust binary name if needed (e.g., your binary executable name)
-  BIN_NAME="pcbfapi"
-  EXT=""
-  if [[ "$target" == *"windows"* ]]; then
-    EXT=".exe"
-  fi
+# 4. Build Linux targets natively inside Docker
+echo "🐳 Building Linux targets inside Docker container..."
+docker build -f Dockerfile.build -t pcb-builder-linux .
 
-  SRC_PATH="target/$target/release/$BIN_NAME$EXT"
-  if [ -f "$SRC_PATH" ]; then
-    ARCHIVE_NAME="${BIN_NAME}-${TAG}-${target}"
-    if [[ "$target" == *"windows"* ]]; then
-      zip -j "$DIST_DIR/${ARCHIVE_NAME}.zip" "$SRC_PATH"
-    else
-      tar -czf "$DIST_DIR/${ARCHIVE_NAME}.tar.gz" -C "target/$target/release" "$BIN_NAME"
-    fi
-  fi
-done
+# Build x86_64 Linux
+docker run --rm -v "$(pwd)":/app pcb-builder-linux cargo build --release --target x86_64-unknown-linux-gnu
+tar -czf "$DIST_DIR/${BIN_NAME}-${TAG}-x86_64-unknown-linux-gnu.tar.gz" -C target/x86_64-unknown-linux-gnu/release "$BIN_NAME"
 
-# 7. Create GitHub Release and upload built assets
+# Build aarch64 Linux (if your Docker host supports emulation, e.g., Apple Silicon)
+docker run --rm --platform linux/arm64 -v "$(pwd)":/app pcb-builder-linux cargo build --release --target aarch64-unknown-linux-gnu
+tar -czf "$DIST_DIR/${BIN_NAME}-${TAG}-aarch64-unknown-linux-gnu.tar.gz" -C target/aarch64-unknown-linux-gnu/release "$BIN_NAME"
+
+# 5. Build macOS targets natively on your Mac
+echo "🍏 Building macOS targets natively..."
+cargo build --release --target x86_64-apple-darwin
+cargo build --release --target aarch64-apple-darwin
+
+tar -czf "$DIST_DIR/${BIN_NAME}-${TAG}-x86_64-apple-darwin.tar.gz" -C target/x86_64-apple-darwin/release "$BIN_NAME"
+tar -czf "$DIST_DIR/${BIN_NAME}-${TAG}-aarch64-apple-darwin.tar.gz" -C target/aarch64-apple-darwin/release "$BIN_NAME"
+
+# 6. Build Windows target via cargo-zigbuild or standard Windows toolchain
+echo "🪟 Building Windows target..."
+cargo zigbuild --release --target x86_64-pc-windows-gnu
+zip -j "$DIST_DIR/${BIN_NAME}-${TAG}-x86_64-pc-windows-gnu.zip" "target/x86_64-pc-windows-gnu/release/$BIN_NAME.exe"
+
+# 7. Publish to GitHub Release
 echo "☁️ Publishing release to GitHub..."
-gh release create "$TAG" "$DIST_DIR"/* --title "$TAG" --notes "Automated local release for $TAG"
+gh release create "$TAG" "$DIST_DIR"/* --title "$TAG" --notes "Local release for $TAG built via Docker & macOS native."
 
-echo "✅ Done! All binaries built via zigbuild and published to GitHub release $TAG."
+echo "✅ Done! All platforms successfully built and published."
