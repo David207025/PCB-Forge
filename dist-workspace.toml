@@ -15,4 +15,7 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msv
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
-formula-repo = "David207025/homebrew-pcb-forge"
+
+[dist.homebrew]
+tap = "David207025/homebrew-pcb-forge"
+publish = true
