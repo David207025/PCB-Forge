@@ -3,7 +3,7 @@
 # Exit immediately if any command fails
 set -e
 
-# 1. Extract the version from pcbapi/Cargo.toml
+# 1. Extract the version from pcbfapi/Cargo.toml
 VERSION=$(grep -m 1 '^version = ' pcbfapi/Cargo.toml | cut -d '"' -f 2)
 
 if [ -z "$VERSION" ]; then
@@ -43,8 +43,49 @@ git push --delete origin "$TAG" 2>/dev/null || true
 # 4. Create and push new tag on the current commit
 echo "✨ Creating new tag $TAG on current commit..."
 git tag "$TAG"
-
-echo "🚀 Pushing new tag to GitHub..."
 git push origin "$TAG"
 
-echo "✅ Done! All code pushed and release tag $TAG created. Check the Actions tab in GitHub!"
+# 5. Build targets locally using cargo-zigbuild
+echo "🔨 Building targets with cargo-zigbuild..."
+TARGETS=(
+  "aarch64-apple-darwin"
+  "x86_64-apple-darwin"
+  "aarch64-unknown-linux-gnu"
+  "x86_64-unknown-linux-gnu"
+  "x86_64-pc-windows-gnu" # Using -gnu for windows via zigbuild avoids MSVC toolchain requirements on Mac
+)
+
+for target in "${TARGETS[@]}"; do
+  echo "🚀 Compiling for $target..."
+  cargo zigbuild --release --target "$target"
+done
+
+# 6. Package artifacts into a dist folder
+DIST_DIR="target/distrib"
+mkdir -p "$DIST_DIR"
+
+echo "📦 Packaging artifacts..."
+for target in "${TARGETS[@]}"; do
+  # Adjust binary name if needed (e.g., your binary executable name)
+  BIN_NAME="pcbfapi"
+  EXT=""
+  if [[ "$target" == *"windows"* ]]; then
+    EXT=".exe"
+  fi
+
+  SRC_PATH="target/$target/release/$BIN_NAME$EXT"
+  if [ -f "$SRC_PATH" ]; then
+    ARCHIVE_NAME="${BIN_NAME}-${TAG}-${target}"
+    if [[ "$target" == *"windows"* ]]; then
+      zip -j "$DIST_DIR/${ARCHIVE_NAME}.zip" "$SRC_PATH"
+    else
+      tar -czf "$DIST_DIR/${ARCHIVE_NAME}.tar.gz" -C "target/$target/release" "$BIN_NAME"
+    fi
+  fi
+done
+
+# 7. Create GitHub Release and upload built assets
+echo "☁️ Publishing release to GitHub..."
+gh release create "$TAG" "$DIST_DIR"/* --title "$TAG" --notes "Automated local release for $TAG"
+
+echo "✅ Done! All binaries built via zigbuild and published to GitHub release $TAG."
