@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 
@@ -18,8 +19,6 @@ pub struct FontConfig {
   #[serde(default)]
   pub weight: Option<String>,
 }
-
-
 
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
 pub struct Dimensions {
@@ -55,20 +54,12 @@ pub enum Node {
 
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
 pub struct Template {
+  #[serde(rename = "$schema", default)]
+  pub schema: Option<String>,
   pub dimensions: Dimensions,
   pub root: Vec<Node>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
-pub struct DataEntry {
-  pub name: String,
-  pub value: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, JsonSchema)]
-pub struct DocumentData {
   #[serde(default)]
-  pub document_data: Vec<DataEntry>,
+  pub global_fields: HashMap<String, String>,
   #[serde(default)]
-  pub page_data: Vec<DataEntry>,
+  pub local_fields: HashMap<String, String>,
 }

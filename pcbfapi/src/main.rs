@@ -11,7 +11,7 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use std::path::PathBuf;
 use std::fs;
-use definitions::{Template, Node};
+use definitions::{Template, Node, Dimensions};
 use printpdf::*;
 
 #[cfg(target_os = "macos")]
@@ -30,9 +30,10 @@ struct StatusPayload {
   percent: u8,
 }
 
+// Updated payload schema expecting just a name identifier
 #[derive(Deserialize)]
-struct PathPayload {
-  path: String,
+struct InitTemplatePayload {
+  name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -50,7 +51,6 @@ impl Default for AppSettings {
   }
 }
 
-/// Load settings from ~/.pcb-forge/settings.json
 fn load_or_create_settings() -> AppSettings {
   let settings_path = tray::get_home_dir().join("settings.json");
   
@@ -135,7 +135,7 @@ async fn main() {
     .route("/status", post(handle_status))
     .route("/remove", post(handle_remove))
     .route("/init-template", post(handle_init_template))
-    .route("/gen-template", post(handle_gen_template))
+    .route("/gen-templates", post(handle_gen_templates))
     .with_state(state);
   
   let listener = tokio::net::TcpListener::bind("127.0.0.1:47210")
@@ -178,213 +178,213 @@ async fn handle_remove(
   "Tray removal requested"
 }
 
+/// Initializes a new template inside ~/.pcb-forge/templates/src/{name}.json
+/// Returns the absolute path of the created template file.
 async fn handle_init_template(
-  Json(payload): Json<PathPayload>,
-) -> &'static str {
-  let target_path = PathBuf::from(&payload.path);
+  Json(payload): Json<InitTemplatePayload>,
+) -> String {
+  let file_name = if payload.name.ends_with(".json") {
+    payload.name
+  } else {
+    format!("{}.json", payload.name)
+  };
   
-  let schema_uri = tray::get_schemas_dir()
-    .join("template.schema.json")
-    .to_string_lossy()
-    .to_string();
+  let target_path = tray::get_templates_src_dir().join(file_name);
+  let file_stem = target_path.file_stem().unwrap_or_default().to_string_lossy();
   
-  let boilerplate = serde_json::json!({
-    "$schema": format!("file://{}", schema_uri),
-    "dimensions": {
-      "width": 210.0,
-      "height": 297.0
-    },
-    "root": []
-  });
+  let schema_path = tray::get_templates_generated_dir().join(format!("{}-data.schema.json", file_stem));
+  
+  let boilerplate = Template {
+    schema: Some(format!("file://{}", schema_path.to_string_lossy())),
+    dimensions: Dimensions { width: 210.0, height: 297.0 },
+    root: vec![],
+    global_fields: std::collections::HashMap::from([
+      ("company_name".to_string(), "Example Corp description".to_string())
+    ]),
+    local_fields: std::collections::HashMap::from([
+      ("serial_number".to_string(), "Serial number description".to_string())
+    ]),
+  };
+  
+  let _ = tray::generate_template_data_schema(&boilerplate, &file_stem);
   
   if let Ok(content) = serde_json::to_string_pretty(&boilerplate) {
     if let Some(parent) = target_path.parent() {
       let _ = fs::create_dir_all(parent);
     }
-    if fs::write(&target_path, content).is_ok() {
-      return "Template initialized successfully";
+    if fs::write(&target_path, &content).is_ok() {
+      return target_path.to_string_lossy().to_string();
     }
   }
-  "Failed to initialize template"
+  
+  "Failed to initialize template".to_string()
 }
 
-async fn handle_gen_template(
-  Json(payload): Json<PathPayload>,
-) -> &'static str {
-  let path = PathBuf::from(&payload.path);
+/// Compiles all valid JSON templates located within ~/.pcb-forge/templates/src/
+async fn handle_gen_templates() -> String {
+  let src_dir = tray::get_templates_src_dir();
   
-  let file_content = match fs::read_to_string(&path) {
-    Ok(content) => content,
-    Err(err) => {
-      eprintln!("Failed to read template path: {}", err);
-      return "Failed to read template file path";
-    }
-  };
-  
-  let template: Template = match serde_json::from_str(&file_content) {
-    Ok(t) => t,
-    Err(e) => {
-      eprintln!("JSON Parse Error: {}", e);
-      return "Failed to parse template JSON structure";
-    }
+  let entries = match fs::read_dir(&src_dir) {
+    Ok(e) => e,
+    Err(_) => return "Failed to read templates src directory".to_string(),
   };
   
   let settings = load_or_create_settings();
+  let mut compiled_count = 0;
   
-  let doc_width = Mm(template.dimensions.width);
-  let doc_height = Mm(template.dimensions.height);
-  let mut doc = PdfDocument::new("PCB Forge Template");
-  
-  // Query system fonts dynamically using font-kit
-  use font_kit::source::SystemSource;
-  use font_kit::family_name::FamilyName;
-  use font_kit::properties::Properties;
-  
-  let font_source = SystemSource::new();
-  let font_handle = font_source
-    .select_family_by_name(&settings.font_family)
-    .and_then(|family_handle| family_handle.fonts().first().cloned().ok_or(font_kit::error::SelectionError::NotFound))
-    .or_else(|_| {
-      font_source
-        .select_family_by_name("Arial")
+  for entry in entries.flatten() {
+    let path = entry.path();
+    if path.extension().and_then(|s| s.to_str()) == Some("json") {
+      let file_content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => continue,
+      };
+      
+      let template: Template = match serde_json::from_str(&file_content) {
+        Ok(t) => t,
+        Err(_) => continue,
+      };
+      
+      let file_stem = path.file_stem().unwrap_or_default().to_string_lossy();
+      let _ = tray::generate_template_data_schema(&template, &file_stem);
+      
+      // Build PDF layout via printpdf
+      let doc_width = Mm(template.dimensions.width);
+      let doc_height = Mm(template.dimensions.height);
+      let mut doc = PdfDocument::new("PCB Forge Template");
+      
+      use font_kit::source::SystemSource;
+      use font_kit::family_name::FamilyName;
+      use font_kit::properties::Properties;
+      
+      let font_source = SystemSource::new();
+      let font_handle = font_source
+        .select_family_by_name(&settings.font_family)
         .and_then(|fh| fh.fonts().first().cloned().ok_or(font_kit::error::SelectionError::NotFound))
-    })
-    .or_else(|_| {
-      font_source
-        .select_family_by_name("Helvetica")
-        .and_then(|fh| fh.fonts().first().cloned().ok_or(font_kit::error::SelectionError::NotFound))
-    })
-    .or_else(|_| {
-      font_source.select_best_match(&[FamilyName::SansSerif], &Properties::new())
-    });
-  
-  let font_bytes = match font_handle {
-    Ok(handle) => match handle {
-      font_kit::handle::Handle::Path { path, .. } => {
-        fs::read(&path).unwrap_or_default()
+        .or_else(|_| font_source.select_family_by_name("Arial").and_then(|fh| fh.fonts().first().cloned().ok_or(font_kit::error::SelectionError::NotFound)))
+        .or_else(|_| font_source.select_best_match(&[FamilyName::SansSerif], &Properties::new()));
+      
+      let font_bytes = match font_handle {
+        Ok(handle) => match handle {
+          font_kit::handle::Handle::Path { path, .. } => fs::read(&path).unwrap_or_default(),
+          font_kit::handle::Handle::Memory { bytes, .. } => bytes.to_vec(),
+        },
+        Err(_) => Vec::new(),
+      };
+      
+      let mut warnings = Vec::new();
+      let font_id = if !font_bytes.is_empty() {
+        if let Some(parsed) = ParsedFont::from_bytes(&font_bytes, 0, &mut warnings) {
+          Some(doc.add_font(&parsed))
+        } else {
+          None
+        }
+      } else {
+        None
+      };
+      
+      let mut page_ops = Vec::new();
+      
+      #[derive(Clone, Copy)]
+      struct Rect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
       }
-      font_kit::handle::Handle::Memory { bytes, .. } => {
-        bytes.to_vec()
-      }
-    },
-    Err(_) => Vec::new(),
-  };
-  
-  let mut warnings = Vec::new();
-  let font_id = if !font_bytes.is_empty() {
-    if let Some(parsed) = ParsedFont::from_bytes(&font_bytes, 0, &mut warnings) {
-      Some(doc.add_font(&parsed))
-    } else {
-      None
-    }
-  } else {
-    None
-  };
-  
-  let mut page_ops = Vec::new();
-  
-  #[derive(Clone, Copy)]
-  struct Rect {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-  }
-  
-  let template_height = template.dimensions.height;
-  
-  fn render_node(
-    node: &Node,
-    parent_box: Rect,
-    global_thickness: f32,
-    template_height: f32,
-    font_id: &Option<FontId>,
-    ops: &mut Vec<Op>
-  ) {
-    match node {
-      Node::Container { ml, mt, mr, mb, thickness, children, .. } => {
-        let x = parent_box.x + ml;
-        let y = parent_box.y + mt;
-        let w = parent_box.w - ml - mr;
-        let h = parent_box.h - mt - mb;
-        
-        let line_width = if *thickness > 0.0 { *thickness } else { global_thickness };
-        let pdf_y = template_height - y - h;
-        
-        let rect_line = Line {
-          points: vec![
-            LinePoint { p: Point::new(Mm(x), Mm(pdf_y)), bezier: false },
-            LinePoint { p: Point::new(Mm(x + w), Mm(pdf_y)), bezier: false },
-            LinePoint { p: Point::new(Mm(x + w), Mm(pdf_y + h)), bezier: false },
-            LinePoint { p: Point::new(Mm(x), Mm(pdf_y + h)), bezier: false },
-          ],
-          is_closed: true,
-        };
-        
-        ops.push(Op::SetOutlineThickness { pt: Pt(line_width) });
-        ops.push(Op::DrawLine { line: rect_line });
-        
-        let current_box = Rect { x, y, w, h };
-        for child in children {
-          render_node(child, current_box, global_thickness, template_height, font_id, ops);
+      
+      let template_height = template.dimensions.height;
+      
+      fn render_node(
+        node: &Node,
+        parent_box: Rect,
+        global_thickness: f32,
+        template_height: f32,
+        font_id: &Option<FontId>,
+        ops: &mut Vec<Op>
+      ) {
+        match node {
+          Node::Container { ml, mt, mr, mb, thickness, children, .. } => {
+            let x = parent_box.x + ml;
+            let y = parent_box.y + mt;
+            let w = parent_box.w - ml - mr;
+            let h = parent_box.h - mt - mb;
+            
+            let line_width = if *thickness > 0.0 { *thickness } else { global_thickness };
+            let pdf_y = template_height - y - h;
+            
+            let rect_line = Line {
+              points: vec![
+                LinePoint { p: Point::new(Mm(x), Mm(pdf_y)), bezier: false },
+                LinePoint { p: Point::new(Mm(x + w), Mm(pdf_y)), bezier: false },
+                LinePoint { p: Point::new(Mm(x + w), Mm(pdf_y + h)), bezier: false },
+                LinePoint { p: Point::new(Mm(x), Mm(pdf_y + h)), bezier: false },
+              ],
+              is_closed: true,
+            };
+            
+            ops.push(Op::SetOutlineThickness { pt: Pt(line_width) });
+            ops.push(Op::DrawLine { line: rect_line });
+            
+            let current_box = Rect { x, y, w, h };
+            for child in children {
+              render_node(child, current_box, global_thickness, template_height, font_id, ops);
+            }
+          }
+          Node::Text { ml, mt, text, font, .. } => {
+            let text_x = parent_box.x + ml;
+            let text_y = template_height - (parent_box.y + mt);
+            
+            let font_size = font.as_ref().map(|f| f.size).unwrap_or(12.0);
+            let text_pos = Point::new(Mm(text_x), Mm(text_y));
+            
+            ops.push(Op::StartTextSection);
+            ops.push(Op::SetTextCursor { pos: text_pos });
+            
+            if let Some(fid) = font_id {
+              ops.push(Op::SetFont {
+                font: PdfFontHandle::External(fid.clone()),
+                size: Pt(font_size),
+              });
+            }
+            
+            ops.push(Op::ShowText {
+              items: vec![TextItem::Text(text.clone())],
+            });
+            ops.push(Op::EndTextSection);
+          }
         }
       }
-      Node::Text { ml, mt, text, font, .. } => {
-        let text_x = parent_box.x + ml;
-        let text_y = template_height - (parent_box.y + mt);
-        
-        let font_size = font.as_ref().map(|f| f.size).unwrap_or(12.0);
-        let text_pos = Point::new(Mm(text_x), Mm(text_y));
-        
-        ops.push(Op::StartTextSection);
-        ops.push(Op::SetTextCursor { pos: text_pos });
-        
-        if let Some(fid) = font_id {
-          ops.push(Op::SetFont {
-            font: PdfFontHandle::External(fid.clone()),
-            size: Pt(font_size),
-          });
-        }
-        
-        ops.push(Op::ShowText {
-          items: vec![TextItem::Text(text.clone())],
-        });
-        ops.push(Op::EndTextSection);
+      
+      let root_box = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: template.dimensions.width,
+        h: template.dimensions.height,
+      };
+      
+      for root_node in &template.root {
+        render_node(root_node, root_box, settings.line_thickness, template_height, &font_id, &mut page_ops);
+      }
+      
+      let save_options = PdfSaveOptions {
+        subset_fonts: true,
+        ..Default::default()
+      };
+      
+      let page = PdfPage::new(doc_width, doc_height, page_ops);
+      let mut save_warnings = Vec::new();
+      
+      let pdf_bytes = doc
+        .with_pages(vec![page])
+        .save(&save_options, &mut save_warnings);
+      
+      let output_pdf_path = tray::get_cache_dir().join(format!("{}.pdf", file_stem));
+      if fs::write(&output_pdf_path, pdf_bytes).is_ok() {
+        compiled_count += 1;
       }
     }
   }
   
-  let root_box = Rect {
-    x: 0.0,
-    y: 0.0,
-    w: template.dimensions.width,
-    h: template.dimensions.height,
-  };
-  
-  for root_node in &template.root {
-    render_node(root_node, root_box, settings.line_thickness, template_height, &font_id, &mut page_ops);
-  }
-  
-  let save_options = PdfSaveOptions {
-    subset_fonts: true,
-    ..Default::default()
-  };
-  
-  let page = PdfPage::new(doc_width, doc_height, page_ops);
-  let mut save_warnings = Vec::new();
-  
-  let pdf_bytes = doc
-    .with_pages(vec![page])
-    .save(&save_options, &mut save_warnings);
-  
-  let file_stem = path.file_stem().unwrap_or_default().to_string_lossy();
-  let output_pdf_path = tray::get_cache_dir().join(format!("{}.pdf", file_stem));
-  
-  match fs::write(&output_pdf_path, pdf_bytes) {
-    Ok(_) => "PDF preview generated successfully in cache",
-    Err(err) => {
-      eprintln!("Failed to write PDF to disk: {}", err);
-      "Failed to write PDF to cache"
-    }
-  }
+  format!("Successfully compiled {} template(s) into cache PDFs", compiled_count)
 }
