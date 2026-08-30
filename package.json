@@ -15,8 +15,10 @@
   "type": "commonjs",
   "main": "package-extension.js",
   "scripts": {
-    "build:webview": "npm --prefix extension/webview-ui run build",
-    "compile:extension": "npm --prefix extension run compile",
+    "build": "pnpm --filter pcb-forge run build:webview && pnpm --filter pcb-forge run compile",
+    "deploy": "pnpm build && node deploy-extension.js",
+    "build:webview": "pnpm --filter pcb-forge run build:webview",
+    "compile:extension": "pnpm --filter pcb-forge run compile",
     "package": "node package-extension.js"
   }
 }

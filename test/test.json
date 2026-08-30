@@ -1,0 +1,43 @@
+{
+  "$schema": "file:///Users/davidvacaroiu/.pcb-forge/schemas/template.schema.json",
+  "dimensions": {
+    "height": 297.0,
+    "width": 210.0
+  },
+  "root": [
+    {
+      "id": "outer-frame",
+      "type": "container",
+      "ml": 10,
+      "mt": 10,
+      "mr": 10,
+      "mb": 10,
+      "children": [
+        {
+          "id": "inner-frame",
+          "type": "container",
+          "ml": 0,
+          "mt": 100,
+          "mr": 0,
+          "mb": 0,
+          "children": [
+            {
+              "id": "text-1",
+              "type": "text",
+              "ml": 10,
+              "mt": 10,
+              "mr": 10,
+              "mb": 10,
+              "text": "Hello World!",
+              "font": {
+                "family": "sans-serif",
+                "size": 12,
+                "weight": "bold"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

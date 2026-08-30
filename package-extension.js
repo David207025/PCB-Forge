@@ -4,7 +4,6 @@ const fs = require('fs');
 
 const rootDir = __dirname;
 const extensionDir = path.join(rootDir, 'extension');
-const webviewDir = path.join(extensionDir, 'web-ui');
 const buildDir = path.join(rootDir, 'build');
 
 function run(command, cwd) {
@@ -37,25 +36,25 @@ try {
     console.warn(`⚠️ Warning: Python script not found at ${pythonScriptPath}. Skipping icon generation.`);
   }
 
-  // 2. Build React Web UI
-  if (fs.existsSync(path.join(webviewDir, 'package.json'))) {
-    run('npm install', webviewDir);
-    run('npm run build', webviewDir);
-  }
+  // 2. Ensure all workspace dependencies are installed/synced via pnpm
+  console.log('\n📦 Ensuring workspace dependencies are up to date...');
+  run('pnpm install', rootDir);
 
-  // 3. Compile Extension TypeScript
-  if (fs.existsSync(path.join(extensionDir, 'package.json'))) {
-    run('npm install', extensionDir);
-    run('npm run compile', extensionDir);
-  }
+  // 3. Build React Web UI & Sync Assets via workspace filter
+  console.log('\n🏗️ Building Web UI...');
+  run('pnpm --filter pcb-forge run build:webview', rootDir);
 
-  // 4. Package extension into build/ with the dynamic version
+  // 4. Compile Extension TypeScript via workspace filter
+  console.log('\n⚙️ Compiling Extension TypeScript...');
+  run('pnpm --filter pcb-forge run compile', rootDir);
+
+  // 5. Package extension into build/ with the dynamic version using pnpm dlx (replaces npx)
   if (!fs.existsSync(buildDir)) {
     fs.mkdirSync(buildDir, {recursive: true});
   }
 
   const outputPath = path.join(buildDir, `pcb-forge-${version}.vsix`);
-  run(`npx @vscode/vsce package --out "${outputPath}"`, extensionDir);
+  run(`pnpm dlx @vscode/vsce package --out "${outputPath}"`, extensionDir);
 
   console.log(`\n✅ SUCCESS: Extension packaged at: build/pcb-forge-${version}.vsix`);
 } catch (err) {
