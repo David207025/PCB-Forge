@@ -30,7 +30,6 @@ struct StatusPayload {
   percent: u8,
 }
 
-// Updated payload schema expecting just a name identifier
 #[derive(Deserialize)]
 struct InitTemplatePayload {
   name: String,
@@ -178,8 +177,9 @@ async fn handle_remove(
   "Tray removal requested"
 }
 
-/// Initializes a new template inside ~/.pcb-forge/templates/src/{name}.json
-/// Returns the absolute path of the created template file.
+/// Initializes a new layout template inside ~/.pcb-forge/templates/src/{name}.json
+/// Pointing to ~/.pcb-forge/schemas/template.schema.json
+/// Returns the absolute path of the created layout template file.
 async fn handle_init_template(
   Json(payload): Json<InitTemplatePayload>,
 ) -> String {
@@ -192,10 +192,11 @@ async fn handle_init_template(
   let target_path = tray::get_templates_src_dir().join(file_name);
   let file_stem = target_path.file_stem().unwrap_or_default().to_string_lossy();
   
-  let schema_path = tray::get_templates_generated_dir().join(format!("{}-data.schema.json", file_stem));
+  // Master layout schema path
+  let master_schema_path = tray::get_schemas_dir().join("template.schema.json");
   
   let boilerplate = Template {
-    schema: Some(format!("file://{}", schema_path.to_string_lossy())),
+    schema: Some(format!("file://{}", master_schema_path.to_string_lossy())),
     dimensions: Dimensions { width: 210.0, height: 297.0 },
     root: vec![],
     global_fields: std::collections::HashMap::from([
@@ -206,7 +207,8 @@ async fn handle_init_template(
     ]),
   };
   
-  let _ = tray::generate_template_data_schema(&boilerplate, &file_stem);
+  // Automatically generate the project-level schema file in generated/
+  let _ = tray::generate_project_schema(&boilerplate, &file_stem);
   
   if let Ok(content) = serde_json::to_string_pretty(&boilerplate) {
     if let Some(parent) = target_path.parent() {
@@ -221,6 +223,7 @@ async fn handle_init_template(
 }
 
 /// Compiles all valid JSON templates located within ~/.pcb-forge/templates/src/
+/// And updates their corresponding project schemas inside ~/.pcb-forge/templates/generated/
 async fn handle_gen_templates() -> String {
   let src_dir = tray::get_templates_src_dir();
   
@@ -246,7 +249,8 @@ async fn handle_gen_templates() -> String {
       };
       
       let file_stem = path.file_stem().unwrap_or_default().to_string_lossy();
-      let _ = tray::generate_template_data_schema(&template, &file_stem);
+      // Regenerate the corresponding project schema in generated/
+      let _ = tray::generate_project_schema(&template, &file_stem);
       
       // Build PDF layout via printpdf
       let doc_width = Mm(template.dimensions.width);
@@ -386,5 +390,5 @@ async fn handle_gen_templates() -> String {
     }
   }
   
-  format!("Successfully compiled {} template(s) into cache PDFs", compiled_count)
+  format!("Successfully compiled {} template(s) and refreshed generated project schemas.", compiled_count)
 }

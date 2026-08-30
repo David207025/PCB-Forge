@@ -5,6 +5,7 @@ use tray_icon::{
 use std::sync::atomic::Ordering;
 use std::path::{Path, PathBuf};
 use std::fs;
+use schemars::schema_for;
 use crate::definitions::Template;
 
 pub static TRAY_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -27,6 +28,21 @@ pub fn get_cache_dir() -> PathBuf {
   path
 }
 
+pub fn get_schemas_dir() -> PathBuf {
+  let path = get_home_dir().join("schemas");
+  if !path.exists() {
+    let _ = fs::create_dir_all(&path);
+  }
+  
+  // Generate the master schema for src layout templates (~/.pcb-forge/schemas/template.schema.json)
+  let template_schema = schema_for!(Template);
+  if let Ok(json) = serde_json::to_string_pretty(&template_schema) {
+    let _ = fs::write(path.join("template.schema.json"), json);
+  }
+  
+  path
+}
+
 pub fn get_templates_src_dir() -> PathBuf {
   let path = get_home_dir().join("templates").join("src");
   if !path.exists() {
@@ -43,9 +59,10 @@ pub fn get_templates_generated_dir() -> PathBuf {
   path
 }
 
-pub fn generate_template_data_schema(template: &Template, file_stem: &str) -> PathBuf {
+/// Generates the schema for project.json files inside ~/.pcb-forge/templates/generated/{file_stem}.schema.json
+pub fn generate_project_schema(template: &Template, file_stem: &str) -> PathBuf {
   let generated_dir = get_templates_generated_dir();
-  let schema_path = generated_dir.join(format!("{}-data.schema.json", file_stem));
+  let schema_path = generated_dir.join(format!("{}.schema.json", file_stem));
   
   let mut global_props = serde_json::Map::new();
   for (key, desc) in &template.global_fields {
@@ -121,6 +138,7 @@ pub fn initialize_tray(menu: Menu) {
   unsafe {
     if !TRAY_ACTIVE.load(Ordering::SeqCst) {
       let _ = get_cache_dir();
+      let _ = get_schemas_dir();
       let _ = get_templates_src_dir();
       let _ = get_templates_generated_dir();
       
