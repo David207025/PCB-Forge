@@ -1,5 +1,6 @@
 mod definitions;
 mod tray;
+mod forge;
 
 use axum::{
   extract::Json,
@@ -51,7 +52,7 @@ impl Default for AppSettings {
 }
 
 fn load_or_create_settings() -> AppSettings {
-  let settings_path = tray::get_home_dir().join("settings.json");
+  let settings_path = forge::get_home_dir().join("settings.json");
   
   if settings_path.exists() {
     if let Ok(content) = fs::read_to_string(&settings_path) {
@@ -189,11 +190,11 @@ async fn handle_init_template(
     format!("{}.json", payload.name)
   };
   
-  let target_path = tray::get_templates_src_dir().join(file_name);
+  let target_path = forge::get_templates_src_dir().join(file_name);
   let file_stem = target_path.file_stem().unwrap_or_default().to_string_lossy();
   
   // Master layout schema path
-  let master_schema_path = tray::get_schemas_dir().join("template.schema.json");
+  let master_schema_path = forge::get_schemas_dir().join("template.schema.json");
   
   let boilerplate = Template {
     schema: Some(format!("file://{}", master_schema_path.to_string_lossy())),
@@ -208,7 +209,7 @@ async fn handle_init_template(
   };
   
   // Automatically generate the project-level schema file in generated/
-  let _ = tray::generate_project_schema(&boilerplate, &file_stem);
+  let _ = forge::generate_project_schema(&boilerplate, &file_stem);
   
   if let Ok(content) = serde_json::to_string_pretty(&boilerplate) {
     if let Some(parent) = target_path.parent() {
@@ -225,7 +226,7 @@ async fn handle_init_template(
 /// Compiles all valid JSON templates located within ~/.pcb-forge/templates/src/
 /// And updates their corresponding project schemas inside ~/.pcb-forge/templates/generated/
 async fn handle_gen_templates() -> String {
-  let src_dir = tray::get_templates_src_dir();
+  let src_dir = forge::get_templates_src_dir();
   
   let entries = match fs::read_dir(&src_dir) {
     Ok(e) => e,
@@ -250,7 +251,7 @@ async fn handle_gen_templates() -> String {
       
       let file_stem = path.file_stem().unwrap_or_default().to_string_lossy();
       // Regenerate the corresponding project schema in generated/
-      let _ = tray::generate_project_schema(&template, &file_stem);
+      let _ = forge::generate_project_schema(&template, &file_stem);
       
       // Build PDF layout via printpdf
       let doc_width = Mm(template.dimensions.width);
@@ -383,7 +384,7 @@ async fn handle_gen_templates() -> String {
         .with_pages(vec![page])
         .save(&save_options, &mut save_warnings);
       
-      let output_pdf_path = tray::get_cache_dir().join(format!("{}.pdf", file_stem));
+      let output_pdf_path = forge::get_cache_dir().join(format!("{}.pdf", file_stem));
       if fs::write(&output_pdf_path, pdf_bytes).is_ok() {
         compiled_count += 1;
       }
