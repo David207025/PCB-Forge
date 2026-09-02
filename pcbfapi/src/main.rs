@@ -189,7 +189,6 @@ async fn handle_init_template(
   let template = Template {
     schema: Some(format!("file://{}", master_schema_path.to_string_lossy())),
     dimensions: Dimensions { width: 210.0, height: 297.0 },
-    root: vec![],
     global_fields: std::collections::HashMap::from([
       ("field1".to_string(), "Company name description".to_string()),
     ]),
