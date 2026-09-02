@@ -28,6 +28,10 @@ image = "0.25"
 schemars = "1.2.2"
 printpdf = "0.12.6"
 font-kit = "0.14.3"
+typst = "0.15.1"
+typst-pdf = "0.15.1"
+fontdb = "0.23.0"
+chrono = "0.4.45"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

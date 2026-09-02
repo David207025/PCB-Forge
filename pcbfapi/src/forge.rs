@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::fs;
-use schemars::schema_for;
-use crate::definitions::Template;
+use serde_json::json;
+use crate::definitions::{Template, ProjectConfig};
 
 pub fn get_home_dir() -> PathBuf {
   let home = std::env::var("HOME")
@@ -24,13 +24,6 @@ pub fn get_schemas_dir() -> PathBuf {
   if !path.exists() {
     let _ = fs::create_dir_all(&path);
   }
-  
-  // Generate the master schema for src layout templates (~/.pcb-forge/schemas/template.schema.json)
-  let template_schema = schema_for!(Template);
-  if let Ok(json) = serde_json::to_string_pretty(&template_schema) {
-    let _ = fs::write(path.join("template.schema.json"), json);
-  }
-  
   path
 }
 
@@ -57,14 +50,14 @@ pub fn init_directories() {
   let _ = get_templates_generated_dir();
 }
 
-/// Generates the streamlined schema for project.json files inside ~/.pcb-forge/templates/generated/{file_stem}.schema.json
-pub fn generate_project_schema(template: &Template, file_stem: &str) -> PathBuf {
+/// Generates the strict project-level JSON schema inside ~/.pcb-forge/templates/generated/{file_stem}.schema.json
+pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
   let generated_dir = get_templates_generated_dir();
   let schema_path = generated_dir.join(format!("{}.schema.json", file_stem));
   
   let mut global_props = serde_json::Map::new();
-  for (key, desc) in &template.global_fields {
-    global_props.insert(key.clone(), serde_json::json!({
+  for (key, desc) in &meta.global_fields {
+    global_props.insert(key.clone(), json!({
       "type": "string",
       "description": desc,
       "default": ""
@@ -72,15 +65,15 @@ pub fn generate_project_schema(template: &Template, file_stem: &str) -> PathBuf 
   }
   
   let mut local_props = serde_json::Map::new();
-  for (key, desc) in &template.local_fields {
-    local_props.insert(key.clone(), serde_json::json!({
+  for (key, desc) in &meta.local_fields {
+    local_props.insert(key.clone(), json!({
       "type": "string",
       "description": desc,
       "default": ""
     }));
   }
   
-  let schema = serde_json::json!({
+  let schema = json!({
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "properties": {
@@ -90,19 +83,70 @@ pub fn generate_project_schema(template: &Template, file_stem: &str) -> PathBuf 
         "properties": global_props,
         "additionalProperties": false
       },
-      "localFields": {
-        "type": "object",
-        "properties": local_props,
-        "additionalProperties": false
+      "pages": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "layout": {
+              "type": "object",
+              "properties": {
+                "size": { "type": "string", "default": "A4" },
+                "orientation": { "type": "boolean", "description": "true for landscape, false for portrait", "default": true }
+              },
+              "required": ["size", "orientation"],
+              "additionalProperties": false
+            },
+            "localFields": {
+              "type": "object",
+              "properties": local_props,
+              "additionalProperties": false
+            },
+            "content": {
+              "type": "string",
+              "enum": ["schematic", "pcb", "pdf"],
+              "description": "Source type: schematic (.kicad_sch), pcb (.kicad_pcb), or pdf"
+            },
+            "path": {
+              "type": "string",
+              "description": "Path to the reference file (.kicad_sch, .kicad_pcb, or .pdf)"
+            }
+          },
+          "required": ["layout", "localFields", "content", "path"],
+          "additionalProperties": false
+        }
       }
     },
-    "required": ["$schema", "globalFields", "localFields"],
+    "required": ["$schema", "globalFields", "pages"],
     "additionalProperties": false
   });
   
-  if let Ok(json) = serde_json::to_string_pretty(&schema) {
-    let _ = fs::write(&schema_path, json);
+  if let Ok(json_str) = serde_json::to_string_pretty(&schema) {
+    let _ = fs::write(&schema_path, json_str);
   }
   
   schema_path
+}
+
+/// Helper to wrap the layout function with the execution stencil loop for Typst compilation
+pub fn build_typst_runner_script(layout_code: &str, project: &ProjectConfig) -> String {
+  let project_json_str = serde_json::to_string(project).unwrap_or_else(|_| "{}".to_string());
+  
+  format!(
+    r#"
+// --- INJECTED PROJECT DATA ---
+#let project = json.decode('{}')
+#let globalFields = project.globalFields
+#let pages = project.pages
+
+// --- USER LAYOUT DEFINITION ---
+{}
+
+// --- EXECUTION STENCIL LOOP ---
+#for p in pages {{
+  page(p.layout, p.localFields, globalFields, p.content, p.path)
+}}
+"#,
+    project_json_str, layout_code
+  )
 }

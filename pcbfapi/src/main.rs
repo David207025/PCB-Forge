@@ -1,22 +1,17 @@
 mod definitions;
-mod tray;
 mod forge;
+mod tray;
 
-use axum::{
-  extract::Json,
-  routing::post,
-  Router,
-};
+use axum::{extract::Json, routing::post, Router};
+use definitions::{Dimensions, ProjectConfig, Template};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use std::path::PathBuf;
-use std::fs;
-use definitions::{Template, Node, Dimensions};
-use printpdf::*;
 
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+use crate::definitions::InMemoryWorld;
 
 #[derive(Debug, Clone, Copy)]
 enum UserEvent {
@@ -36,6 +31,12 @@ struct InitTemplatePayload {
   name: String,
 }
 
+#[derive(Deserialize)]
+struct CompileProjectPayload {
+  template_name: String,
+  project: ProjectConfig,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct AppSettings {
   line_thickness: f32,
@@ -53,7 +54,6 @@ impl Default for AppSettings {
 
 fn load_or_create_settings() -> AppSettings {
   let settings_path = forge::get_home_dir().join("settings.json");
-  
   if settings_path.exists() {
     if let Ok(content) = fs::read_to_string(&settings_path) {
       if let Ok(settings) = serde_json::from_str(&content) {
@@ -61,7 +61,6 @@ fn load_or_create_settings() -> AppSettings {
       }
     }
   }
-  
   let default_settings = AppSettings::default();
   if let Ok(content) = serde_json::to_string_pretty(&default_settings) {
     if let Some(parent) = settings_path.parent() {
@@ -85,13 +84,12 @@ async fn main() {
     unsafe {
       let app = NSApp();
       app.setActivationPolicy_(
-        NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory
+        NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
       );
     }
   }
   
   let _settings = load_or_create_settings();
-  
   let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   
   #[cfg(target_os = "macos")]
@@ -138,10 +136,7 @@ async fn main() {
     .route("/gen-templates", post(handle_gen_templates))
     .with_state(state);
   
-  let listener = tokio::net::TcpListener::bind("127.0.0.1:47210")
-    .await
-    .unwrap();
-  
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:47210").await.unwrap();
   println!("🚀 PCB Forge API running locally on http://127.0.0.1:47210");
   
   tokio::spawn(async move {
@@ -150,7 +145,6 @@ async fn main() {
   
   event_loop.run(move |event, _, control_flow| {
     *control_flow = ControlFlow::Wait;
-    
     match event {
       tao::event::Event::UserEvent(UserEvent::Update(percent)) => {
         tray::update_process_status(percent);
@@ -178,218 +172,134 @@ async fn handle_remove(
   "Tray removal requested"
 }
 
-/// Initializes a new layout template inside ~/.pcb-forge/templates/src/{name}.json
-/// Pointing to ~/.pcb-forge/schemas/template.schema.json
-/// Returns the absolute path of the created layout template file.
+/// Initializes a new template folder inside ~/.pcb-forge/templates/src/{name}/
+/// Creating `meta.json` and standard `layout.typ`
 async fn handle_init_template(
   Json(payload): Json<InitTemplatePayload>,
 ) -> String {
-  let file_name = if payload.name.ends_with(".json") {
-    payload.name
-  } else {
-    format!("{}.json", payload.name)
-  };
+  let template_name = payload.name.trim_end_matches(".json").to_string();
+  let template_dir = forge::get_templates_src_dir().join(&template_name);
   
-  let target_path = forge::get_templates_src_dir().join(file_name);
-  let file_stem = target_path.file_stem().unwrap_or_default().to_string_lossy();
+  if fs::create_dir_all(&template_dir).is_err() {
+    return "Failed to create template folder".to_string();
+  }
   
-  // Master layout schema path
   let master_schema_path = forge::get_schemas_dir().join("template.schema.json");
   
-  let boilerplate = Template {
+  let template = Template {
     schema: Some(format!("file://{}", master_schema_path.to_string_lossy())),
     dimensions: Dimensions { width: 210.0, height: 297.0 },
     root: vec![],
     global_fields: std::collections::HashMap::from([
-      ("company_name".to_string(), "Example Corp description".to_string())
+      ("field1".to_string(), "Company name description".to_string()),
     ]),
     local_fields: std::collections::HashMap::from([
-      ("serial_number".to_string(), "Serial number description".to_string())
+      ("field3".to_string(), "Serial number description".to_string()),
     ]),
   };
   
-  // Automatically generate the project-level schema file in generated/
-  let _ = forge::generate_project_schema(&boilerplate, &file_stem);
-  
-  if let Ok(content) = serde_json::to_string_pretty(&boilerplate) {
-    if let Some(parent) = target_path.parent() {
-      let _ = fs::create_dir_all(parent);
-    }
-    if fs::write(&target_path, &content).is_ok() {
-      return target_path.to_string_lossy().to_string();
-    }
+  // Save meta.json
+  let meta_path = template_dir.join("meta.json");
+  if let Ok(json_str) = serde_json::to_string_pretty(&template) {
+    let _ = fs::write(&meta_path, json_str);
   }
   
-  "Failed to initialize template".to_string()
+  // Save layout.typ
+  let layout_typ_path = template_dir.join("layout.typ");
+  let standard_layout_code = r#"
+#let page(layout, localFields, globalFields, content, path) = {
+  set page(
+    paper: layout.size,
+    flipped: layout.orientation,
+    margin: 0mm
+  )
+
+  if path != "" {
+    place(top + left, image(path, width: 100%, height: 100%))
+  }
+
+  align(bottom + right)[
+    #block(
+      width: 100mm,
+      height: 25mm,
+      stroke: 0.5pt + black,
+      inset: 8pt,
+      fill: rgb("ffffff").transparentize(15%),
+      grid(
+        columns: (1fr, 1fr),
+        gutter: 4pt,
+        [ *Company:* #globalFields.field1 ],
+        [ *Serial:* #localFields.field3 ],
+        [ *Type:* #content ]
+      )
+    )
+  ]
+
+  pagebreak()
+}
+"#;
+  let _ = fs::write(&layout_typ_path, standard_layout_code.trim());
+  
+  // Automatically generate the strict project schema in generated/
+  let _ = forge::generate_project_schema(&template, &template_name);
+  
+  format!(
+    "Successfully initialized template folder: {}",
+    template_dir.to_string_lossy()
+  )
 }
 
-/// Compiles all valid JSON templates located within ~/.pcb-forge/templates/src/
-/// And updates their corresponding project schemas inside ~/.pcb-forge/templates/generated/
-async fn handle_gen_templates() -> String {
-  let src_dir = forge::get_templates_src_dir();
+/// Compiles active project payload using the stenciled Typst layout script
+async fn handle_gen_templates(
+  Json(payload): Json<CompileProjectPayload>,
+) -> String {
+  let template_dir = forge::get_templates_src_dir().join(&payload.template_name);
+  let meta_path = template_dir.join("meta.json");
+  let layout_path = template_dir.join("layout.typ");
   
-  let entries = match fs::read_dir(&src_dir) {
-    Ok(e) => e,
-    Err(_) => return "Failed to read templates src directory".to_string(),
-  };
-  
-  let settings = load_or_create_settings();
-  let mut compiled_count = 0;
-  
-  for entry in entries.flatten() {
-    let path = entry.path();
-    if path.extension().and_then(|s| s.to_str()) == Some("json") {
-      let file_content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => continue,
-      };
-      
-      let template: Template = match serde_json::from_str(&file_content) {
-        Ok(t) => t,
-        Err(_) => continue,
-      };
-      
-      let file_stem = path.file_stem().unwrap_or_default().to_string_lossy();
-      // Regenerate the corresponding project schema in generated/
-      let _ = forge::generate_project_schema(&template, &file_stem);
-      
-      // Build PDF layout via printpdf
-      let doc_width = Mm(template.dimensions.width);
-      let doc_height = Mm(template.dimensions.height);
-      let mut doc = PdfDocument::new("PCB Forge Template");
-      
-      use font_kit::source::SystemSource;
-      use font_kit::family_name::FamilyName;
-      use font_kit::properties::Properties;
-      
-      let font_source = SystemSource::new();
-      let font_handle = font_source
-        .select_family_by_name(&settings.font_family)
-        .and_then(|fh| fh.fonts().first().cloned().ok_or(font_kit::error::SelectionError::NotFound))
-        .or_else(|_| font_source.select_family_by_name("Arial").and_then(|fh| fh.fonts().first().cloned().ok_or(font_kit::error::SelectionError::NotFound)))
-        .or_else(|_| font_source.select_best_match(&[FamilyName::SansSerif], &Properties::new()));
-      
-      let font_bytes = match font_handle {
-        Ok(handle) => match handle {
-          font_kit::handle::Handle::Path { path, .. } => fs::read(&path).unwrap_or_default(),
-          font_kit::handle::Handle::Memory { bytes, .. } => bytes.to_vec(),
-        },
-        Err(_) => Vec::new(),
-      };
-      
-      let mut warnings = Vec::new();
-      let font_id = if !font_bytes.is_empty() {
-        if let Some(parsed) = ParsedFont::from_bytes(&font_bytes, 0, &mut warnings) {
-          Some(doc.add_font(&parsed))
-        } else {
-          None
-        }
-      } else {
-        None
-      };
-      
-      let mut page_ops = Vec::new();
-      
-      #[derive(Clone, Copy)]
-      struct Rect {
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-      }
-      
-      let template_height = template.dimensions.height;
-      
-      fn render_node(
-        node: &Node,
-        parent_box: Rect,
-        global_thickness: f32,
-        template_height: f32,
-        font_id: &Option<FontId>,
-        ops: &mut Vec<Op>
-      ) {
-        match node {
-          Node::Container { ml, mt, mr, mb, thickness, children, .. } => {
-            let x = parent_box.x + ml;
-            let y = parent_box.y + mt;
-            let w = parent_box.w - ml - mr;
-            let h = parent_box.h - mt - mb;
-            
-            let line_width = if *thickness > 0.0 { *thickness } else { global_thickness };
-            let pdf_y = template_height - y - h;
-            
-            let rect_line = Line {
-              points: vec![
-                LinePoint { p: Point::new(Mm(x), Mm(pdf_y)), bezier: false },
-                LinePoint { p: Point::new(Mm(x + w), Mm(pdf_y)), bezier: false },
-                LinePoint { p: Point::new(Mm(x + w), Mm(pdf_y + h)), bezier: false },
-                LinePoint { p: Point::new(Mm(x), Mm(pdf_y + h)), bezier: false },
-              ],
-              is_closed: true,
-            };
-            
-            ops.push(Op::SetOutlineThickness { pt: Pt(line_width) });
-            ops.push(Op::DrawLine { line: rect_line });
-            
-            let current_box = Rect { x, y, w, h };
-            for child in children {
-              render_node(child, current_box, global_thickness, template_height, font_id, ops);
-            }
-          }
-          Node::Text { ml, mt, text, font, .. } => {
-            let text_x = parent_box.x + ml;
-            let text_y = template_height - (parent_box.y + mt);
-            
-            let font_size = font.as_ref().map(|f| f.size).unwrap_or(12.0);
-            let text_pos = Point::new(Mm(text_x), Mm(text_y));
-            
-            ops.push(Op::StartTextSection);
-            ops.push(Op::SetTextCursor { pos: text_pos });
-            
-            if let Some(fid) = font_id {
-              ops.push(Op::SetFont {
-                font: PdfFontHandle::External(fid.clone()),
-                size: Pt(font_size),
-              });
-            }
-            
-            ops.push(Op::ShowText {
-              items: vec![TextItem::Text(text.clone())],
-            });
-            ops.push(Op::EndTextSection);
-          }
-        }
-      }
-      
-      let root_box = Rect {
-        x: 0.0,
-        y: 0.0,
-        w: template.dimensions.width,
-        h: template.dimensions.height,
-      };
-      
-      for root_node in &template.root {
-        render_node(root_node, root_box, settings.line_thickness, template_height, &font_id, &mut page_ops);
-      }
-      
-      let save_options = PdfSaveOptions {
-        subset_fonts: true,
-        ..Default::default()
-      };
-      
-      let page = PdfPage::new(doc_width, doc_height, page_ops);
-      let mut save_warnings = Vec::new();
-      
-      let pdf_bytes = doc
-        .with_pages(vec![page])
-        .save(&save_options, &mut save_warnings);
-      
-      let output_pdf_path = forge::get_cache_dir().join(format!("{}.pdf", file_stem));
-      if fs::write(&output_pdf_path, pdf_bytes).is_ok() {
-        compiled_count += 1;
-      }
-    }
+  if !meta_path.exists() || !layout_path.exists() {
+    return format!(
+      "Template '{}' not found or missing meta.json/layout.typ",
+      payload.template_name
+    );
   }
   
-  format!("Successfully compiled {} template(s) and refreshed generated project schemas.", compiled_count)
+  let meta_content = match fs::read_to_string(&meta_path) {
+    Ok(c) => c,
+    Err(_) => return "Failed to read meta.json".to_string(),
+  };
+  
+  let template: Template = match serde_json::from_str(&meta_content) {
+    Ok(t) => t,
+    Err(_) => return "Failed to parse meta.json".to_string(),
+  };
+  
+  // Refresh generated schema reference
+  let _ = forge::generate_project_schema(&template, &payload.template_name);
+  
+  let layout_code = match fs::read_to_string(&layout_path) {
+    Ok(c) => c,
+    Err(_) => return "Failed to read layout.typ".to_string(),
+  };
+  
+  let stenciled_script = forge::build_typst_runner_script(&layout_code, &payload.project);
+  
+  // Compile stenciled script with Typst
+  let world = InMemoryWorld::new(stenciled_script);
+  match typst::compile(&world).output {
+    Ok(document) => {
+      let pdf_bytes = typst_pdf::pdf(&document, &Default::default()).unwrap_or_default();
+      let output_pdf_path =
+        forge::get_cache_dir().join(format!("{}.pdf", payload.template_name));
+      if fs::write(&output_pdf_path, pdf_bytes).is_ok() {
+        format!(
+          "Successfully compiled template to PDF: {}",
+          output_pdf_path.to_string_lossy()
+        )
+      } else {
+        "Failed to write compiled PDF file".to_string()
+      }
+    }
+    Err(errors) => format!("Typst compilation error: {:?}", errors),
+  }
 }
