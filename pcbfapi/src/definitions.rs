@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 
@@ -30,16 +31,9 @@ pub struct FontConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
-pub struct Dimensions {
-  pub width: f32,
-  pub height: f32,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
 pub struct Template {
   #[serde(rename = "$schema", default)]
   pub schema: Option<String>,
-  pub dimensions: Dimensions,
   #[serde(default)]
   pub global_fields: HashMap<String, String>,
   #[serde(default)]
@@ -55,15 +49,14 @@ pub struct PageLayout {
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
 pub struct PageConfig {
   pub layout: PageLayout,
-  #[serde(rename = "localFields")]
   pub local_fields: HashMap<String, String>,
   pub content: String,
   pub path: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProjectConfig {
-  #[serde(rename = "globalFields")]
+  pub layout: String,
   pub global_fields: HashMap<String, String>,
   pub pages: Vec<PageConfig>,
 }
@@ -119,6 +112,23 @@ impl InMemoryWorld {
       sources,
     }
   }
+  
+  /// Compiles a raw Typst script into PDF bytes using the in-memory compiler engine.
+  pub fn compile_pdf(main_content: String) -> Result<Vec<u8>, String> {
+    let world = Self::new(main_content);
+    let output = typst::compile(&world);
+    
+    match output.output {
+      Ok(document) => Ok(typst_pdf::pdf(&document, &typst_pdf::PdfOptions::default()).unwrap()),
+      Err(errors) => {
+        let err_messages: Vec<String> = errors
+          .into_iter()
+          .map(|e| format!("span {:?}: {}", e.span, e.message))
+          .collect();
+        Err(format!("Typst in-memory compilation failed:\n{}", err_messages.join("\n")))
+      }
+    }
+  }
 }
 
 impl World for InMemoryWorld {
@@ -138,16 +148,20 @@ impl World for InMemoryWorld {
     if let Some(source) = self.sources.get(&id) {
       Ok(source.clone())
     } else {
-      let path = id.vpath().as_rootless_path();
-      Err(FileError::NotFound(path.to_path_buf()))
+      // Re-attach filesystem root '/' to resolve absolute paths
+      let path = Path::new("/").join(id.vpath().as_rootless_path());
+      let content = std::fs::read_to_string(&path)
+        .map_err(|_| FileError::NotFound(path.clone()))?;
+      Ok(Source::new(id, content))
     }
   }
   
   fn file(&self, id: FileId) -> FileResult<Bytes> {
-    let path = id.vpath().as_rootless_path();
-    std::fs::read(path)
+    // Re-attach filesystem root '/' to resolve absolute paths
+    let path = Path::new("/").join(id.vpath().get_without_slash());
+    std::fs::read(&path)
       .map(Bytes::new)
-      .map_err(|_| FileError::NotFound(path.to_path_buf()))
+      .map_err(|_| FileError::NotFound(path))
   }
   
   fn font(&self, index: usize) -> Option<Font> {

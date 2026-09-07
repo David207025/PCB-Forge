@@ -3,15 +3,15 @@ mod forge;
 mod tray;
 
 use axum::{extract::Json, routing::post, Router};
-use definitions::{Dimensions, ProjectConfig, Template};
+use definitions::{PageConfig, PageLayout, ProjectConfig, Template};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 
 #[cfg(target_os = "macos")]
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
-use crate::definitions::InMemoryWorld;
 
 #[derive(Debug, Clone, Copy)]
 enum UserEvent {
@@ -32,9 +32,11 @@ struct InitTemplatePayload {
 }
 
 #[derive(Deserialize)]
-struct CompileProjectPayload {
-  template_name: String,
-  project: ProjectConfig,
+#[serde(rename_all = "camelCase")]
+struct PreviewTemplatePayload {
+  name: String,
+  page: Option<PageConfig>,
+  global_fields: Option<HashMap<String, String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -89,6 +91,7 @@ async fn main() {
     }
   }
   
+  forge::init_directories();
   let _settings = load_or_create_settings();
   let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   
@@ -99,7 +102,9 @@ async fn main() {
   }
   
   let proxy = event_loop.create_proxy();
-  let state = AppState { proxy: proxy.clone() };
+  let state = AppState {
+    proxy: proxy.clone(),
+  };
   
   let tray_menu = Menu::new();
   let status_label = MenuItem::new("Status: No process started", false, None);
@@ -134,9 +139,12 @@ async fn main() {
     .route("/remove", post(handle_remove))
     .route("/init-template", post(handle_init_template))
     .route("/gen-templates", post(handle_gen_templates))
+    .route("/preview-template", post(handle_preview_template))
     .with_state(state);
   
-  let listener = tokio::net::TcpListener::bind("127.0.0.1:47210").await.unwrap();
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:47210")
+    .await
+    .unwrap();
   println!("🚀 PCB Forge API running locally on http://127.0.0.1:47210");
   
   tokio::spawn(async move {
@@ -174,9 +182,7 @@ async fn handle_remove(
 
 /// Initializes a new template folder inside ~/.pcb-forge/templates/src/{name}/
 /// Creating `meta.json` and standard `layout.typ`
-async fn handle_init_template(
-  Json(payload): Json<InitTemplatePayload>,
-) -> String {
+async fn handle_init_template(Json(payload): Json<InitTemplatePayload>) -> String {
   let template_name = payload.name.trim_end_matches(".json").to_string();
   let template_dir = forge::get_templates_src_dir().join(&template_name);
   
@@ -188,13 +194,14 @@ async fn handle_init_template(
   
   let template = Template {
     schema: Some(format!("file://{}", master_schema_path.to_string_lossy())),
-    dimensions: Dimensions { width: 210.0, height: 297.0 },
-    global_fields: std::collections::HashMap::from([
-      ("field1".to_string(), "Company name description".to_string()),
-    ]),
-    local_fields: std::collections::HashMap::from([
-      ("field3".to_string(), "Serial number description".to_string()),
-    ]),
+    global_fields: HashMap::from([(
+      "field1".to_string(),
+      "Company name description".to_string(),
+    )]),
+    local_fields: HashMap::from([(
+      "field3".to_string(),
+      "Serial number description".to_string(),
+    )]),
   };
   
   // Save meta.json
@@ -206,7 +213,7 @@ async fn handle_init_template(
   // Save layout.typ
   let layout_typ_path = template_dir.join("layout.typ");
   let standard_layout_code = r#"
-#let page(layout, localFields, globalFields, content, path) = {
+#let render_page(layout, local_fields, global_fields, content, path) = {
   set page(
     paper: layout.size,
     flipped: layout.orientation,
@@ -227,14 +234,12 @@ async fn handle_init_template(
       grid(
         columns: (1fr, 1fr),
         gutter: 4pt,
-        [ *Company:* #globalFields.field1 ],
-        [ *Serial:* #localFields.field3 ],
+        [ *Company:* #global_fields.field1 ],
+        [ *Serial:* #local_fields.field3 ],
         [ *Type:* #content ]
       )
     )
   ]
-
-  pagebreak()
 }
 "#;
   let _ = fs::write(&layout_typ_path, standard_layout_code.trim());
@@ -248,57 +253,162 @@ async fn handle_init_template(
   )
 }
 
-/// Compiles active project payload using the stenciled Typst layout script
-async fn handle_gen_templates(
-  Json(payload): Json<CompileProjectPayload>,
+/// Scans all template folders in ~/.pcb-forge/templates/src/ and compiles their meta.json files
+/// into JSON schemas inside ~/.pcb-forge/templates/generated/
+async fn handle_gen_templates() -> String {
+  let src_dir = forge::get_templates_src_dir();
+  let entries = match fs::read_dir(&src_dir) {
+    Ok(entries) => entries,
+    Err(_) => return "Failed to read templates src directory".to_string(),
+  };
+  
+  let mut generated_count = 0;
+  let mut errors = Vec::new();
+  
+  for entry in entries.flatten() {
+    let path = entry.path();
+    if path.is_dir() {
+      let folder_name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(name) => name.to_string(),
+        None => continue,
+      };
+      
+      let meta_path = path.join("meta.json");
+      if !meta_path.exists() {
+        continue;
+      }
+      
+      match fs::read_to_string(&meta_path) {
+        Ok(content) => match serde_json::from_str::<Template>(&content) {
+          Ok(template) => {
+            let _ = forge::generate_project_schema(&template, &folder_name);
+            generated_count += 1;
+          }
+          Err(err) => {
+            errors.push(format!("Failed to parse {}: {}", folder_name, err));
+          }
+        },
+        Err(err) => {
+          errors.push(format!("Failed to read {}: {}", folder_name, err));
+        }
+      };
+    }
+  }
+  
+  if errors.is_empty() {
+    format!("Successfully generated {} schema(s)", generated_count)
+  } else {
+    format!(
+      "Generated {} schema(s) with errors:\n{}",
+      generated_count,
+      errors.join("\n")
+    )
+  }
+}
+
+/// Generates project config from request payload or defaults from meta.json, converts referenced
+/// KiCad PCB/Schematic assets to SVG via kicad-cli, injects data into layout.typ, and compiles PDF.
+async fn handle_preview_template(
+  Json(payload): Json<PreviewTemplatePayload>,
 ) -> String {
-  let template_dir = forge::get_templates_src_dir().join(&payload.template_name);
+  let template_name = payload.name.trim_end_matches(".json").to_string();
+  let template_dir = forge::get_templates_src_dir().join(&template_name);
+  
   let meta_path = template_dir.join("meta.json");
   let layout_path = template_dir.join("layout.typ");
   
   if !meta_path.exists() || !layout_path.exists() {
     return format!(
-      "Template '{}' not found or missing meta.json/layout.typ",
-      payload.template_name
+      "Template '{}' files missing (expected meta.json and layout.typ in {})",
+      template_name,
+      template_dir.display()
     );
   }
   
-  let meta_content = match fs::read_to_string(&meta_path) {
-    Ok(c) => c,
-    Err(_) => return "Failed to read meta.json".to_string(),
+  let meta_str = match fs::read_to_string(&meta_path) {
+    Ok(content) => content,
+    Err(e) => return format!("Failed to read meta.json: {}", e),
   };
   
-  let template: Template = match serde_json::from_str(&meta_content) {
+  let template: Template = match serde_json::from_str(&meta_str) {
     Ok(t) => t,
-    Err(_) => return "Failed to parse meta.json".to_string(),
+    Err(e) => return format!("Failed to parse meta.json: {}", e),
   };
-  
-  // Refresh generated schema reference
-  let _ = forge::generate_project_schema(&template, &payload.template_name);
   
   let layout_code = match fs::read_to_string(&layout_path) {
-    Ok(c) => c,
-    Err(_) => return "Failed to read layout.typ".to_string(),
+    Ok(code) => code,
+    Err(e) => return format!("Failed to read layout.typ: {}", e),
   };
   
-  let stenciled_script = forge::build_typst_runner_script(&layout_code, &payload.project);
+  // Merge or default global fields
+  let mut final_global_fields = payload.global_fields.unwrap_or_default();
+  for (key, _desc) in &template.global_fields {
+    final_global_fields
+      .entry(key.clone())
+      .or_insert_with(|| format!("Sample {}", key));
+  }
   
-  // Compile stenciled script with Typst
-  let world = InMemoryWorld::new(stenciled_script);
-  match typst::compile(&world).output {
-    Ok(document) => {
-      let pdf_bytes = typst_pdf::pdf(&document, &Default::default()).unwrap_or_default();
-      let output_pdf_path =
-        forge::get_cache_dir().join(format!("{}.pdf", payload.template_name));
-      if fs::write(&output_pdf_path, pdf_bytes).is_ok() {
-        format!(
-          "Successfully compiled template to PDF: {}",
-          output_pdf_path.to_string_lossy()
-        )
-      } else {
-        "Failed to write compiled PDF file".to_string()
+  // Construct PageConfig from incoming payload or generate fallback
+  let mut page = match payload.page {
+    Some(mut user_page) => {
+      for (key, _desc) in &template.local_fields {
+        user_page
+          .local_fields
+          .entry(key.clone())
+          .or_insert_with(|| format!("Sample {}", key));
+      }
+      user_page
+    }
+    None => {
+      let mut mock_local_fields = HashMap::new();
+      for (key, _desc) in &template.local_fields {
+        mock_local_fields.insert(key.clone(), format!("Sample {}", key));
+      }
+      PageConfig {
+        layout: PageLayout {
+          size: "a4".to_string(),
+          orientation: false,
+        },
+        local_fields: mock_local_fields,
+        content: "schematic".to_string(),
+        path: "".to_string(),
       }
     }
-    Err(errors) => format!("Typst compilation error: {:?}", errors),
+  };
+  
+  // Resolve content asset (.kicad_pcb / .kicad_sch -> SVG via kicad-cli)
+  if !page.path.trim().is_empty() {
+    match forge::resolve_content_asset(&page.content, &page.path) {
+      Ok(resolved_path) => {
+        page.path = resolved_path;
+      }
+      Err(err) => {
+        return format!("Failed to resolve template content asset: {}", err);
+      }
+    }
+  }
+  
+  let project_config = ProjectConfig {
+    layout: layout_path.to_string_lossy().to_string(),
+    global_fields: final_global_fields,
+    pages: vec![page],
+  };
+  
+  let typst_runner_script = forge::build_typst_runner_script(&layout_code, &project_config);
+  
+  let cache_dir = forge::get_cache_dir();
+  let target_typ_path = cache_dir.join(format!("{}_preview.typ", template_name));
+  let target_pdf_path = cache_dir.join(format!("{}_preview.pdf", template_name));
+  
+  if let Err(e) = fs::write(&target_typ_path, typst_runner_script) {
+    return format!("Failed to write preview Typst file: {}", e);
+  }
+  
+  match forge::compile_typst(&target_typ_path, &target_pdf_path) {
+    Ok(_) => format!(
+      "Successfully generated preview PDF at: {}",
+      target_pdf_path.to_string_lossy()
+    ),
+    Err(err) => format!("Failed to compile preview PDF: {}", err),
   }
 }
