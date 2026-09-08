@@ -421,7 +421,6 @@ pub fn resolve_content_asset(content_type: &str, raw_path_str: &str) -> Result<S
           "export",
           "svg",
           "--exclude-drawing-sheet",
-          "--no-background-color",
           "--pages",
           "1",
           "--output",
