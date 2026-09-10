@@ -1,9 +1,13 @@
 use crate::definitions::{InMemoryWorld, ProjectConfig, Template};
 use schemars::schema_for;
 use serde_json::json;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use pulldown_cmark::{CowStr, Event, Parser, Tag};
+use pulldown_cmark_to_cmark::cmark;
 
 fn escape_typst_string(s: &str) -> String {
   s.replace('\\', "\\\\")
@@ -95,12 +99,10 @@ pub fn get_templates_generated_dir() -> PathBuf {
 
 /// Discovers the location of `kicad-cli` on the system.
 pub fn get_kicad_cli_path() -> Result<PathBuf, String> {
-  // 1. Try system PATH first
   if Command::new("kicad-cli").arg("--version").output().is_ok() {
     return Ok(PathBuf::from("kicad-cli"));
   }
   
-  // 2. Dynamic Windows directory search
   if cfg!(target_os = "windows") {
     let base_dir = Path::new(r"C:\Program Files\KiCad");
     if base_dir.is_dir() {
@@ -123,7 +125,6 @@ pub fn get_kicad_cli_path() -> Result<PathBuf, String> {
     }
   }
   
-  // 3. Explicit fallback paths
   let static_paths: Vec<&str> = if cfg!(target_os = "macos") {
     vec![
       "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
@@ -146,7 +147,7 @@ pub fn get_kicad_cli_path() -> Result<PathBuf, String> {
     }
   }
   
-  Err("kicad-cli executable could not be found in PATH or standard installation directories. Please install KiCad or add kicad-cli to your system PATH.".to_string())
+  Err("kicad-cli executable could not be found in PATH or standard installation directories.".to_string())
 }
 
 fn extract_attr_str(tag: &str, attr_name: &str) -> Option<String> {
@@ -208,14 +209,45 @@ fn parse_svg_viewbox(svg: &str) -> Option<(f64, f64, f64, f64)> {
   None
 }
 
-/// Post-processes an SVG to crop empty outer padding and whitespace.
+/// Post-processes an SVG to remove background rectangles and trim whitespace.
 pub fn trim_svg_whitespace(svg_path: &Path) -> Result<(), String> {
-  let content = fs::read_to_string(svg_path)
+  let raw_content = fs::read_to_string(svg_path)
     .map_err(|e| format!("Failed to read SVG {:?}: {}", svg_path, e))?;
   
-  let orig_vb = parse_svg_viewbox(&content);
+  let orig_vb = parse_svg_viewbox(&raw_content);
   let (orig_w, orig_h) = orig_vb.map(|(_, _, w, h)| (w, h)).unwrap_or((0.0, 0.0));
   
+  // 1. Strip background rectangle tags matching full canvas size or 100% dimensions
+  let mut content = String::with_capacity(raw_content.len());
+  let mut pos = 0;
+  while let Some(start) = raw_content[pos..].find("<rect") {
+    let abs_start = pos + start;
+    content.push_str(&raw_content[pos..abs_start]);
+    
+    if let Some(end) = raw_content[abs_start..].find('>') {
+      let abs_end = abs_start + end + 1;
+      let tag = &raw_content[abs_start..abs_end];
+      
+      let is_percent_bg = tag.contains("width=\"100%\"") || tag.contains("width='100%'");
+      let w = extract_attr_num(tag, "width").unwrap_or(0.0);
+      let h = extract_attr_num(tag, "height").unwrap_or(0.0);
+      let is_canvas_bg = orig_w > 0.0 && (w - orig_w).abs() < 10.0 && (h - orig_h).abs() < 10.0;
+      
+      if is_percent_bg || is_canvas_bg {
+        pos = abs_end; // Omit the background rectangle entirely
+        continue;
+      }
+      
+      content.push_str(tag);
+      pos = abs_end;
+    } else {
+      content.push_str(&raw_content[abs_start..]);
+      pos = raw_content.len();
+    }
+  }
+  content.push_str(&raw_content[pos..]);
+  
+  // 2. Calculate graphic bounding box for tight cropping
   let mut min_x = f64::MAX;
   let mut min_y = f64::MAX;
   let mut max_x = f64::MIN;
@@ -231,15 +263,6 @@ pub fn trim_svg_whitespace(svg_path: &Path) -> Result<(), String> {
     let tag_name = tag.split_whitespace().next().unwrap_or("").to_lowercase();
     if tag_name.starts_with("svg") {
       continue;
-    }
-    
-    // Ignore page background rects matching full canvas size
-    if tag_name.starts_with("rect") {
-      if let (Some(w), Some(h)) = (extract_attr_num(tag, "width"), extract_attr_num(tag, "height")) {
-        if orig_w > 0.0 && (w - orig_w).abs() < 5.0 && (h - orig_h).abs() < 5.0 {
-          continue;
-        }
-      }
     }
     
     let mut update = |x: f64, y: f64| {
@@ -298,7 +321,7 @@ pub fn trim_svg_whitespace(svg_path: &Path) -> Result<(), String> {
     let height = max_y - min_y;
     
     if width > 0.0 && height > 0.0 {
-      let margin = 2.0; // Minimal safety margin in SVG units to prevent edge clipping
+      let margin = 2.0;
       let new_min_x = min_x - margin;
       let new_min_y = min_y - margin;
       let new_width = width + (margin * 2.0);
@@ -306,38 +329,125 @@ pub fn trim_svg_whitespace(svg_path: &Path) -> Result<(), String> {
       
       let new_vb = format!("{:.2} {:.2} {:.2} {:.2}", new_min_x, new_min_y, new_width, new_height);
       
-      let mut updated = content;
-      if let Some(start) = updated.find("viewBox=\"") {
-        if let Some(end) = updated[start + 9..].find('"') {
-          updated.replace_range(start + 9..start + 9 + end, &new_vb);
+      if let Some(start) = content.find("viewBox=\"") {
+        if let Some(end) = content[start + 9..].find('"') {
+          content.replace_range(start + 9..start + 9 + end, &new_vb);
         }
-      } else if let Some(start) = updated.find("viewBox='") {
-        if let Some(end) = updated[start + 9..].find('\'') {
-          updated.replace_range(start + 9..start + 9 + end, &new_vb);
+      } else if let Some(start) = content.find("viewBox='") {
+        if let Some(end) = content[start + 9..].find('\'') {
+          content.replace_range(start + 9..start + 9 + end, &new_vb);
         }
-      } else if let Some(pos) = updated.find("<svg") {
-        if let Some(rel_end) = updated[pos..].find('>') {
-          updated.insert_str(pos + rel_end, &format!(" viewBox=\"{}\"", new_vb));
+      } else if let Some(pos) = content.find("<svg") {
+        if let Some(rel_end) = content[pos..].find('>') {
+          content.insert_str(pos + rel_end, &format!(" viewBox=\"{}\"", new_vb));
         }
       }
-      
-      fs::write(svg_path, updated)
-        .map_err(|e| format!("Failed to write trimmed SVG {:?}: {}", svg_path, e))?;
     }
   }
+  
+  fs::write(svg_path, content)
+    .map_err(|e| format!("Failed to write cleaned SVG {:?}: {}", svg_path, e))?;
   
   Ok(())
 }
 
-/// Resolves raw page content files into Typst-compatible vector/image formats (SVG/PDF/PNG).
-pub fn resolve_content_asset(content_type: &str, raw_path_str: &str) -> Result<String, String> {
+pub fn resolve_project_path(raw_path_str: &str, base_dir: &Path) -> String {
+  if raw_path_str.trim().is_empty() {
+    return "".to_string();
+  }
+  
+  let (file_path_str, layers_option) = match raw_path_str.split_once(';') {
+    Some((p, l)) => (p.trim(), Some(l.trim())),
+    None => (raw_path_str.trim(), None),
+  };
+  
+  let p = Path::new(file_path_str);
+  let resolved_file_path = if p.is_absolute() {
+    p.to_path_buf()
+  } else {
+    base_dir.join(p)
+  };
+  
+  let final_path_buf = resolved_file_path.canonicalize().unwrap_or(resolved_file_path);
+  let final_str = final_path_buf.to_string_lossy().to_string();
+  
+  if let Some(layers) = layers_option {
+    format!("{};{}", final_str, layers)
+  } else {
+    final_str
+  }
+}
+
+pub fn preprocess_markdown_images(md_content: &str, md_file_path: &Path) -> String {
+  let md_dir = md_file_path.parent().unwrap_or_else(|| Path::new(""));
+  
+  let parser = Parser::new(md_content);
+  let events = parser.map(|event| match event {
+    Event::Start(Tag::Image {
+                   link_type,
+                   dest_url,
+                   title,
+                   id,
+                 }) => {
+      let resolved_url = resolve_image_dest(&dest_url, md_dir);
+      Event::Start(Tag::Image {
+        link_type,
+        dest_url: CowStr::Boxed(resolved_url.into_boxed_str()),
+        title,
+        id,
+      })
+    }
+    _ => event,
+  });
+  
+  let mut buf = String::with_capacity(md_content.len());
+  cmark(events, &mut buf).unwrap_or_default();
+  buf
+}
+
+fn resolve_image_dest(url: &str, base_dir: &Path) -> String {
+  // Ignore remote or data URLs
+  if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("data:") {
+    return url.to_string();
+  }
+  
+  let p = Path::new(url);
+  let abs_path = if p.is_absolute() {
+    p.to_path_buf()
+  } else {
+    base_dir.join(p)
+  };
+  
+  // Canonicalize to clean up `.` / `..` segments if file exists
+  abs_path
+    .canonicalize()
+    .unwrap_or(abs_path)
+    .to_string_lossy()
+    .to_string()
+}
+
+pub fn resolve_content_asset_with_dir(
+  content_type: &str,
+  raw_path_str: &str,
+  extra_args: &[String],
+  custom_out_dir: Option<&Path>,
+) -> Result<String, String> {
   if raw_path_str.trim().is_empty() {
     return Ok("".to_string());
   }
   
-  let input_path = Path::new(raw_path_str);
+  let (file_path_str, layers_option) = match raw_path_str.split_once(';') {
+    Some((p, l)) => (p.trim(), Some(l.trim())),
+    None => (raw_path_str.trim(), None),
+  };
+  
+  if file_path_str.is_empty() {
+    return Ok("".to_string());
+  }
+  
+  let input_path = Path::new(file_path_str);
   if !input_path.exists() {
-    return Err(format!("Source file does not exist at path: {}", raw_path_str));
+    return Err(format!("Source file does not exist at path: {}", file_path_str));
   }
   
   let extension = input_path
@@ -346,28 +456,33 @@ pub fn resolve_content_asset(content_type: &str, raw_path_str: &str) -> Result<S
     .unwrap_or("")
     .to_lowercase();
   
-  if matches!(extension.as_str(), "svg" | "pdf" | "png" | "jpg" | "jpeg") {
+  // Pass through static image formats directly
+  if matches!(extension.as_str(), "svg" | "png" | "jpg" | "jpeg") {
     let canonical = input_path
       .canonicalize()
-      .map_err(|e| format!("Failed to resolve path {}: {}", raw_path_str, e))?;
+      .map_err(|e| format!("Failed to resolve path {}: {}", file_path_str, e))?;
     return Ok(canonical.to_string_lossy().to_string());
   }
   
-  if extension != "kicad_pcb" && extension != "kicad_sch" {
+  if extension != "kicad_pcb" && extension != "kicad_sch" && extension != "md" {
     return Err(format!(
-      "Unsupported file format '.{}'. Expected .kicad_pcb, .kicad_sch, .svg, .pdf, .png, or .jpg",
+      "Unsupported file format '.{}'. Expected .kicad_pcb, .kicad_sch, .md, .svg, .png, or .jpg",
       extension
     ));
   }
   
-  let cache_dir = get_cache_dir();
+  let out_dir = custom_out_dir.map(PathBuf::from).unwrap_or_else(get_cache_dir);
+  if !out_dir.exists() {
+    let _ = fs::create_dir_all(&out_dir);
+  }
+  
   let file_stem = input_path
     .file_stem()
     .and_then(|s| s.to_str())
     .unwrap_or("export");
   
   let metadata = fs::metadata(input_path)
-    .map_err(|e| format!("Failed to read metadata for {}: {}", raw_path_str, e))?;
+    .map_err(|e| format!("Failed to read metadata for {}: {}", file_path_str, e))?;
   
   let modified_time = metadata
     .modified()
@@ -376,32 +491,71 @@ pub fn resolve_content_asset(content_type: &str, raw_path_str: &str) -> Result<S
     .unwrap_or_default()
     .as_secs();
   
-  let cached_svg_name = format!("{}_{}_{}.svg", file_stem, content_type, modified_time);
-  let cached_svg_path = cache_dir.join(cached_svg_name);
-  
-  if cached_svg_path.exists() {
-    let canonical = cached_svg_path
+  // --- NEW: PROCESS MARKDOWN FILES ---
+  if extension == "md" {
+    let md_raw = fs::read_to_string(input_path)
+      .map_err(|e| format!("Failed to read markdown file {:?}: {}", input_path, e))?;
+    
+    // Rewrite image links in AST from relative to absolute paths
+    let processed_md = preprocess_markdown_images(&md_raw, input_path);
+    
+    let cached_md_name = format!("{}_{}_{}.md", file_stem, content_type, modified_time);
+    let cached_md_path = out_dir.join(&cached_md_name);
+    
+    fs::write(&cached_md_path, processed_md)
+      .map_err(|e| format!("Failed to write processed markdown to {:?}: {}", cached_md_path, e))?;
+    
+    let canonical = cached_md_path
       .canonicalize()
-      .map_err(|e| format!("Failed to resolve cached path {:?}: {}", cached_svg_path, e))?;
+      .map_err(|e| format!("Failed to resolve processed markdown path {:?}: {}", cached_md_path, e))?;
     return Ok(canonical.to_string_lossy().to_string());
   }
   
+  // --- KICAD EXPORTS ---
   let kicad_cli = get_kicad_cli_path()?;
+  
+  let args_hash = if extra_args.is_empty() {
+    0
+  } else {
+    let mut hasher = DefaultHasher::new();
+    extra_args.hash(&mut hasher);
+    hasher.finish()
+  };
   
   match extension.as_str() {
     "kicad_pcb" => {
+      let layers = match layers_option {
+        Some(l) if !l.is_empty() => l,
+        _ => return Ok("".to_string()),
+      };
+      
+      let layers_slug = layers.replace(['/', '\\', ' ', ':', ';', ','], "_");
+      let cached_svg_name = format!("{}_{}_{}_{}_{:x}.svg", file_stem, content_type, modified_time, layers_slug, args_hash);
+      let cached_svg_path = out_dir.join(&cached_svg_name);
+      
+      if cached_svg_path.exists() {
+        let canonical = cached_svg_path
+          .canonicalize()
+          .map_err(|e| format!("Failed to resolve cached path {:?}: {}", cached_svg_path, e))?;
+        return Ok(canonical.to_string_lossy().to_string());
+      }
+      
       let status = Command::new(&kicad_cli)
         .args([
           "pcb",
           "export",
           "svg",
+          "--mode-single",
           "--exclude-drawing-sheet",
           "--page-size-mode",
           "2",
+          "--layers",
+          layers,
           "--output",
           cached_svg_path.to_str().unwrap(),
           input_path.to_str().unwrap(),
         ])
+        .args(extra_args)
         .status()
         .map_err(|e| format!("Failed to run kicad-cli ({:?}): {}", kicad_cli, e))?;
       
@@ -409,24 +563,41 @@ pub fn resolve_content_asset(content_type: &str, raw_path_str: &str) -> Result<S
         return Err(format!(
           "kicad-cli failed with exit code {:?} while exporting PCB {}",
           status.code(),
-          raw_path_str
+          file_path_str
         ));
       }
       trim_svg_whitespace(&cached_svg_path)?;
+      
+      let canonical = cached_svg_path
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve generated cached path {:?}: {}", cached_svg_path, e))?;
+      Ok(canonical.to_string_lossy().to_string())
     }
     "kicad_sch" => {
+      let cached_svg_name = format!("{}_{}_{}_{:x}.svg", file_stem, content_type, modified_time, args_hash);
+      let cached_svg_path = out_dir.join(&cached_svg_name);
+      
+      if cached_svg_path.exists() {
+        let canonical = cached_svg_path
+          .canonicalize()
+          .map_err(|e| format!("Failed to resolve cached path {:?}: {}", cached_svg_path, e))?;
+        return Ok(canonical.to_string_lossy().to_string());
+      }
+      
       let output = Command::new(&kicad_cli)
         .args([
           "sch",
           "export",
           "svg",
           "--exclude-drawing-sheet",
+          "--no-background-color",
           "--pages",
           "1",
           "--output",
-          cache_dir.to_str().unwrap(),
+          out_dir.to_str().unwrap(),
           input_path.to_str().unwrap(),
         ])
+        .args(extra_args)
         .output()
         .map_err(|e| format!("Failed to run kicad-cli ({:?}): {}", kicad_cli, e))?;
       
@@ -456,7 +627,7 @@ pub fn resolve_content_asset(content_type: &str, raw_path_str: &str) -> Result<S
           }
           None
         })
-        .unwrap_or_else(|| cache_dir.join(format!("{}.svg", file_stem)));
+        .unwrap_or_else(|| out_dir.join(format!("{}.svg", file_stem)));
       
       if generated_svg_path.exists() {
         fs::rename(&generated_svg_path, &cached_svg_path).map_err(|e| {
@@ -472,14 +643,62 @@ pub fn resolve_content_asset(content_type: &str, raw_path_str: &str) -> Result<S
         ));
       }
       trim_svg_whitespace(&cached_svg_path)?;
+      
+      let canonical = cached_svg_path
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve generated cached path {:?}: {}", cached_svg_path, e))?;
+      Ok(canonical.to_string_lossy().to_string())
     }
     _ => unreachable!(),
   }
+}
+
+pub fn find_layout_file(
+  layout_option: Option<&str>,
+  schema_option: Option<&str>,
+  project_dir: &Path,
+) -> Result<PathBuf, String> {
+  if let Some(l) = layout_option {
+    if !l.trim().is_empty() {
+      let custom_path = project_dir.join(l.trim());
+      if custom_path.exists() {
+        return Ok(custom_path);
+      }
+      let template_path = get_templates_src_dir().join(l.trim()).join("layout.typ");
+      if template_path.exists() {
+        return Ok(template_path);
+      }
+    }
+  }
   
-  let canonical = cached_svg_path
-    .canonicalize()
-    .map_err(|e| format!("Failed to resolve generated cached path {:?}: {}", cached_svg_path, e))?;
-  Ok(canonical.to_string_lossy().to_string())
+  if let Some(s) = schema_option {
+    if let Some(template_name) = extract_template_name_from_schema(s) {
+      let template_path = get_templates_src_dir().join(&template_name).join("layout.typ");
+      if template_path.exists() {
+        return Ok(template_path);
+      }
+    }
+  }
+  
+  Err("Could not locate layout.typ from project layout field or $schema URI.".to_string())
+}
+
+pub fn resolve_content_asset(
+  content_type: &str,
+  raw_path_str: &str,
+  extra_args: &[String],
+) -> Result<String, String> {
+  resolve_content_asset_with_dir(content_type, raw_path_str, extra_args, None)
+}
+
+pub fn extract_template_name_from_schema(schema_uri: &str) -> Option<String> {
+  let file_name = schema_uri.split('/').last()?;
+  if let Some(prefix) = file_name.strip_suffix(".schema.json") {
+    Some(prefix.to_string())
+  } else {
+    let p = Path::new(file_name);
+    p.file_stem().map(|s| s.to_string_lossy().to_string())
+  }
 }
 
 /// Generates the base template JSON schema inside ~/.pcb-forge/schemas/template.schema.json
@@ -537,6 +756,10 @@ pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "$schema": {
+        "type": "string",
+        "description": "Path or URI to the JSON schema"
+      },
       "layout": {
         "type": "string",
         "description": "Path to the Typst layout file (e.g. layout.typ)"
@@ -567,12 +790,19 @@ pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
             },
             "content": {
               "type": "string",
-              "enum": ["schematic", "pcb", "pdf"],
-              "description": "Source type: schematic (.kicad_sch), pcb (.kicad_pcb), or pdf"
+              "enum": ["sch", "pcb", "md"],
+              "description": "Source type: sch (.kicad_sch), pcb (.kicad_pcb), or md (.md)"
             },
             "path": {
               "type": "string",
-              "description": "Path to the reference file (.kicad_sch, .kicad_pcb, or .pdf)"
+              "description": "Path to the reference file (.kicad_sch, .kicad_pcb, or .md)"
+            },
+            "extra_args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional CLI arguments (e.g., ['--black-and-white', '--theme=dark'])"
             }
           },
           "required": ["layout", "local_fields", "content", "path"],
@@ -634,4 +864,78 @@ pub fn compile_typst(typ_path: &Path, output_pdf_path: &Path) -> Result<(), Stri
     .map_err(|e| format!("Failed to remove Typst source file {}: {}", typ_path.display(), e))?;
   
   Ok(())
+}
+
+pub fn generate_project_pdf(project_json_path: &Path) -> Result<PathBuf, String> {
+  let canonical_json_path = project_json_path
+    .canonicalize()
+    .map_err(|e| format!("Project JSON file not found at {:?}: {}", project_json_path, e))?;
+  
+  let project_dir = canonical_json_path
+    .parent()
+    .ok_or_else(|| "Invalid project JSON parent directory".to_string())?;
+  
+  let project_stem = canonical_json_path
+    .file_stem()
+    .and_then(|s| s.to_str())
+    .unwrap_or("project");
+  
+  let build_dir = project_dir.join(".pcb-forge");
+  fs::create_dir_all(&build_dir)
+    .map_err(|e| format!("Failed to create .pcb-forge build folder {:?}: {}", build_dir, e))?;
+  
+  let json_str = fs::read_to_string(&canonical_json_path)
+    .map_err(|e| format!("Failed to read project JSON: {}", e))?;
+  
+  let raw_val: serde_json::Value = serde_json::from_str(&json_str)
+    .map_err(|e| format!("Invalid JSON structure: {}", e))?;
+  
+  let mut project: ProjectConfig = serde_json::from_value(raw_val.clone())
+    .map_err(|e| format!("Failed to deserialize ProjectConfig: {}", e))?;
+  
+  let layout_option = Some(project.layout.as_str());
+  let schema_option = raw_val.get("$schema").and_then(|v| v.as_str());
+  
+  let layout_file_path = find_layout_file(layout_option, schema_option, project_dir)?;
+  let layout_code = fs::read_to_string(&layout_file_path)
+    .map_err(|e| format!("Failed to read layout file {:?}: {}", layout_file_path, e))?;
+  
+  // 1. Preprocess paths and export content assets into .pcb-forge
+  for page in project.pages.iter_mut() {
+    let preprocessed_path = resolve_project_path(&page.path, project_dir);
+    let extra_args = page.extra_args.as_deref().unwrap_or(&[]);
+    let resolved_asset_path = resolve_content_asset_with_dir(
+      &page.content,
+      &preprocessed_path,
+      extra_args,
+      Some(&build_dir),
+    )?;
+    page.path = resolved_asset_path;
+  }
+  
+  // 2. Generate sub-result PDFs for each page inside .pcb-forge
+  for (i, page) in project.pages.iter().enumerate() {
+    let single_page_project = ProjectConfig {
+      layout: project.layout.clone(),
+      global_fields: project.global_fields.clone(),
+      pages: vec![page.clone()],
+    };
+    
+    let single_script = build_typst_runner_script(&layout_code, &single_page_project);
+    let pdf_bytes = compile_typst_script(single_script)?;
+    
+    let page_pdf_path = build_dir.join(format!("page_{}.pdf", i + 1));
+    fs::write(&page_pdf_path, pdf_bytes)
+      .map_err(|e| format!("Failed to write page PDF {:?}: {}", page_pdf_path, e))?;
+  }
+  
+  // 3. Compile full project PDF into project directory
+  let full_script = build_typst_runner_script(&layout_code, &project);
+  let full_pdf_bytes = compile_typst_script(full_script)?;
+  let output_pdf_path = project_dir.join(format!("{}.pdf", project_stem));
+  
+  fs::write(&output_pdf_path, full_pdf_bytes)
+    .map_err(|e| format!("Failed to write main PDF output {:?}: {}", output_pdf_path, e))?;
+  
+  Ok(output_pdf_path)
 }

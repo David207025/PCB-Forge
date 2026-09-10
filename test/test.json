@@ -1,43 +1,72 @@
 {
-  "$schema": "file:///Users/davidvacaroiu/.pcb-forge/schemas/template.schema.json",
-  "dimensions": {
-    "height": 297.0,
-    "width": 210.0
+  "$schema": "file:///Users/davidvacaroiu/.pcb-forge/templates/generated/test.schema.json",
+  "global_fields": {
+    "betreuer": "SreS",
+    "date": "09.09.2026",
+    "document_status": "Prototyp",
+    "gepr": "VacD",
+    "gez": "VacD",
+    "id_nr": "5AHEL",
+    "lang": "DE",
+    "material": "",
+    "name": "David Vacaroiu",
+    "revision": "1",
+    "scale": "1:1",
+    "share": "SreS",
+    "subtitle": "OmniControl",
+    "title": "",
+    "tolerance": "",
+    "version": "1.0"
   },
-  "root": [
+  "layout": "/Users/davidvacaroiu/.pcb-forge/templates/src/test/layout.typ",
+  "pages": [
     {
-      "id": "outer-frame",
-      "type": "container",
-      "ml": 10,
-      "mt": 10,
-      "mr": 10,
-      "mb": 10,
-      "children": [
-        {
-          "id": "inner-frame",
-          "type": "container",
-          "ml": 0,
-          "mt": 100,
-          "mr": 0,
-          "mb": 0,
-          "children": [
-            {
-              "id": "text-1",
-              "type": "text",
-              "ml": 10,
-              "mt": 10,
-              "mr": 10,
-              "mb": 10,
-              "text": "Hello World!",
-              "font": {
-                "family": "sans-serif",
-                "size": 12,
-                "weight": "bold"
-              }
-            }
-          ]
-        }
-      ]
+      "content": "sch",
+      "layout": {
+        "orientation": true,
+        "size": "a4"
+      },
+      "local_fields": {
+        "document_title": "Beilage",
+        "document_type": "Schaltplan",
+        "page": "1",
+        "pages": "1"
+      },
+      "path": "/Users/davidvacaroiu/Documents/_School_/Maturaprojekt/Venturi/Hardware/Venturi_MainPCB/Venturi_MainPCB.kicad_sch"
+    },
+    {
+      "content": "pcb",
+      "layout": {
+        "orientation": true,
+        "size": "a4"
+      },
+      "extra_args": [
+        "--black-and-white"
+      ],
+      "local_fields": {
+        "document_title": "Beilage",
+        "document_type": "Layout Top",
+        "page": "1",
+        "pages": "1"
+      },
+      "path": "/Users/davidvacaroiu/Documents/_School_/Maturaprojekt/Venturi/Hardware/Venturi_MainPCB/Venturi_MainPCB.kicad_pcb;F.Cu"
+    },
+    {
+      "content": "md",
+      "layout": {
+        "orientation": false,
+        "size": "a4"
+      },
+      "extra_args": [
+        "--black-and-white"
+      ],
+      "local_fields": {
+        "document_title": "Beilage",
+        "document_type": "Layout Top",
+        "page": "1",
+        "pages": "1"
+      },
+      "path": "./test.md"
     }
   ]
 }

@@ -5,6 +5,7 @@ mod tray;
 use axum::{extract::Json, routing::post, Router};
 use definitions::{PageConfig, PageLayout, ProjectConfig, Template};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -32,11 +33,21 @@ struct InitTemplatePayload {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+struct InitProjectPayload {
+  template: String,
+  path: String,
+}
+
+#[derive(Deserialize)]
 struct PreviewTemplatePayload {
   name: String,
   page: Option<PageConfig>,
   global_fields: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct GenProjectPayload {
+  path: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -138,8 +149,10 @@ async fn main() {
     .route("/status", post(handle_status))
     .route("/remove", post(handle_remove))
     .route("/init-template", post(handle_init_template))
+    .route("/init-project", post(handle_init_project))
     .route("/gen-templates", post(handle_gen_templates))
     .route("/preview-template", post(handle_preview_template))
+    .route("/gen-project", post(handle_gen_project))
     .with_state(state);
   
   let listener = tokio::net::TcpListener::bind("127.0.0.1:47210")
@@ -181,7 +194,7 @@ async fn handle_remove(
 }
 
 /// Initializes a new template folder inside ~/.pcb-forge/templates/src/{name}/
-/// Creating `meta.json` and standard `layout.typ`
+/// Creating `meta.json` and standard dynamic `layout.typ`
 async fn handle_init_template(Json(payload): Json<InitTemplatePayload>) -> String {
   let template_name = payload.name.trim_end_matches(".json").to_string();
   let template_dir = forge::get_templates_src_dir().join(&template_name);
@@ -194,14 +207,14 @@ async fn handle_init_template(Json(payload): Json<InitTemplatePayload>) -> Strin
   
   let template = Template {
     schema: Some(format!("file://{}", master_schema_path.to_string_lossy())),
-    global_fields: HashMap::from([(
-      "field1".to_string(),
-      "Company name description".to_string(),
-    )]),
-    local_fields: HashMap::from([(
-      "field3".to_string(),
-      "Serial number description".to_string(),
-    )]),
+    global_fields: HashMap::from([
+      ("name".to_string(), "Author Name".to_string()),
+      ("title".to_string(), "Project Title".to_string()),
+    ]),
+    local_fields: HashMap::from([
+      ("document_type".to_string(), "Document Type".to_string()),
+      ("document_title".to_string(), "Document Title".to_string()),
+    ]),
   };
   
   // Save meta.json
@@ -210,7 +223,7 @@ async fn handle_init_template(Json(payload): Json<InitTemplatePayload>) -> Strin
     let _ = fs::write(&meta_path, json_str);
   }
   
-  // Save layout.typ
+  // Save dynamic layout.typ
   let layout_typ_path = template_dir.join("layout.typ");
   let standard_layout_code = r#"
 #let render_page(layout, local_fields, global_fields, content, path) = {
@@ -226,17 +239,15 @@ async fn handle_init_template(Json(payload): Json<InitTemplatePayload>) -> Strin
 
   align(bottom + right)[
     #block(
-      width: 100mm,
-      height: 25mm,
+      width: 140mm,
       stroke: 0.5pt + black,
       inset: 8pt,
       fill: rgb("ffffff").transparentize(15%),
       grid(
         columns: (1fr, 1fr),
-        gutter: 4pt,
-        [ *Company:* #global_fields.field1 ],
-        [ *Serial:* #local_fields.field3 ],
-        [ *Type:* #content ]
+        gutter: 6pt,
+        ..global_fields.pairs().map(((k, v)) => [*#k:* #v]),
+        ..local_fields.pairs().map(((k, v)) => [*#k:* #v])
       )
     )
   ]
@@ -251,6 +262,77 @@ async fn handle_init_template(Json(payload): Json<InitTemplatePayload>) -> Strin
     "Successfully initialized template folder: {}",
     template_dir.to_string_lossy()
   )
+}
+
+/// Generates a project JSON configuration pre-populated with meta.json key-value pairs
+async fn handle_init_project(Json(payload): Json<InitProjectPayload>) -> String {
+  let template_name = payload.template.trim_end_matches(".json").to_string();
+  let template_dir = forge::get_templates_src_dir().join(&template_name);
+  let meta_path = template_dir.join("meta.json");
+  
+  if !meta_path.exists() {
+    return format!(
+      "Template '{}' not found (expected meta.json in {})",
+      template_name,
+      template_dir.display()
+    );
+  }
+  
+  let meta_content = match fs::read_to_string(&meta_path) {
+    Ok(c) => c,
+    Err(e) => return format!("Failed to read meta.json: {}", e),
+  };
+  
+  let meta: Template = match serde_json::from_str(&meta_content) {
+    Ok(t) => t,
+    Err(e) => return format!("Failed to parse meta.json: {}", e),
+  };
+  
+  let schema_path = forge::get_templates_generated_dir().join(format!("{}.schema.json", template_name));
+  if !schema_path.exists() {
+    let _ = forge::generate_project_schema(&meta, &template_name);
+  }
+  
+  let project_json = json!({
+    "$schema": format!("file://{}", schema_path.to_string_lossy()),
+    "layout": template_dir.join("layout.typ").to_string_lossy(),
+    "global_fields": meta.global_fields,
+    "pages": [
+      {
+        "layout": {
+          "size": "a4",
+          "orientation": true
+        },
+        "local_fields": meta.local_fields,
+        "content": "sch",
+        "path": "path"
+      }
+    ]
+  });
+  
+  let target_path = std::path::Path::new(&payload.path);
+  let dest_file_path = if target_path.extension().and_then(|e| e.to_str()) == Some("json") {
+    target_path.to_path_buf()
+  } else {
+    target_path.join(format!("{}.json", template_name))
+  };
+  
+  if let Some(parent) = dest_file_path.parent() {
+    let _ = fs::create_dir_all(parent);
+  }
+  
+  let json_str = match serde_json::to_string_pretty(&project_json) {
+    Ok(s) => s,
+    Err(e) => return format!("Failed to serialize project JSON: {}", e),
+  };
+  
+  match fs::write(&dest_file_path, json_str) {
+    Ok(_) => format!(
+      "Successfully initialized project configuration at: {}",
+      dest_file_path.display()
+    ),
+    Err(e) => format!("Failed to write project JSON to {}: {}", dest_file_path.display(), e),
+  }
 }
 
 /// Scans all template folders in ~/.pcb-forge/templates/src/ and compiles their meta.json files
@@ -306,7 +388,9 @@ async fn handle_gen_templates() -> String {
   }
 }
 
-/// Generates project config from request payload or defaults from meta.json, converts referenced
+/// Generates project config directly from request payload fields, converts referenced
+/// KiCad PCB/Schematic assets to SVG via kicad-cli, injects data into layout.typ, and compiles PDF.
+/// Generates project config directly from request payload fields, converts referenced
 /// KiCad PCB/Schematic assets to SVG via kicad-cli, injects data into layout.typ, and compiles PDF.
 async fn handle_preview_template(
   Json(payload): Json<PreviewTemplatePayload>,
@@ -314,71 +398,39 @@ async fn handle_preview_template(
   let template_name = payload.name.trim_end_matches(".json").to_string();
   let template_dir = forge::get_templates_src_dir().join(&template_name);
   
-  let meta_path = template_dir.join("meta.json");
   let layout_path = template_dir.join("layout.typ");
   
-  if !meta_path.exists() || !layout_path.exists() {
+  if !layout_path.exists() {
     return format!(
-      "Template '{}' files missing (expected meta.json and layout.typ in {})",
+      "Template '{}' layout file missing (expected layout.typ in {})",
       template_name,
       template_dir.display()
     );
   }
-  
-  let meta_str = match fs::read_to_string(&meta_path) {
-    Ok(content) => content,
-    Err(e) => return format!("Failed to read meta.json: {}", e),
-  };
-  
-  let template: Template = match serde_json::from_str(&meta_str) {
-    Ok(t) => t,
-    Err(e) => return format!("Failed to parse meta.json: {}", e),
-  };
   
   let layout_code = match fs::read_to_string(&layout_path) {
     Ok(code) => code,
     Err(e) => return format!("Failed to read layout.typ: {}", e),
   };
   
-  // Merge or default global fields
-  let mut final_global_fields = payload.global_fields.unwrap_or_default();
-  for (key, _desc) in &template.global_fields {
-    final_global_fields
-      .entry(key.clone())
-      .or_insert_with(|| format!("Sample {}", key));
-  }
+  // Load global fields directly from payload
+  let final_global_fields = payload.global_fields.unwrap_or_default();
   
-  // Construct PageConfig from incoming payload or generate fallback
-  let mut page = match payload.page {
-    Some(mut user_page) => {
-      for (key, _desc) in &template.local_fields {
-        user_page
-          .local_fields
-          .entry(key.clone())
-          .or_insert_with(|| format!("Sample {}", key));
-      }
-      user_page
-    }
-    None => {
-      let mut mock_local_fields = HashMap::new();
-      for (key, _desc) in &template.local_fields {
-        mock_local_fields.insert(key.clone(), format!("Sample {}", key));
-      }
-      PageConfig {
-        layout: PageLayout {
-          size: "a4".to_string(),
-          orientation: false,
-        },
-        local_fields: mock_local_fields,
-        content: "schematic".to_string(),
-        path: "".to_string(),
-      }
-    }
-  };
+  // Load page config directly from payload
+  let mut page = payload.page.unwrap_or_else(|| PageConfig {
+    layout: PageLayout {
+      size: "a4".to_string(),
+      orientation: false,
+    },
+    local_fields: HashMap::new(),
+    content: "schematic".to_string(),
+    path: "".to_string(),
+    extra_args: None,
+  });
   
   // Resolve content asset (.kicad_pcb / .kicad_sch -> SVG via kicad-cli)
   if !page.path.trim().is_empty() {
-    match forge::resolve_content_asset(&page.content, &page.path) {
+    match forge::resolve_content_asset(&page.content, &page.path, page.extra_args.as_deref().unwrap_or_default()) {
       Ok(resolved_path) => {
         page.path = resolved_path;
       }
@@ -410,5 +462,18 @@ async fn handle_preview_template(
       target_pdf_path.to_string_lossy()
     ),
     Err(err) => format!("Failed to compile preview PDF: {}", err),
+  }
+}
+
+async fn handle_gen_project(
+  Json(payload): Json<GenProjectPayload>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+  let project_path = std::path::PathBuf::from(&payload.path);
+  match forge::generate_project_pdf(&project_path) {
+    Ok(pdf_path) => Ok(Json(json!({
+      "status": "success",
+      "pdf": pdf_path.to_string_lossy()
+    }))),
+    Err(e) => Err((axum::http::StatusCode::BAD_REQUEST, e)),
   }
 }
