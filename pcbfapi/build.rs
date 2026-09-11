@@ -4,6 +4,12 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
+  #[cfg(target_os = "windows")]
+  {
+    println!("cargo:rustc-link-lib=ucrt");
+    println!("cargo:rustc-link-lib=msvcrt");
+  }
+  
   let out_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
   let binaries_dir = Path::new(&out_dir).join("binaries");
   

@@ -3966,6 +3966,7 @@ dependencies = [
  "include_dir",
  "lopdf",
  "objc",
+ "ort",
  "pulldown-cmark",
  "pulldown-cmark-to-cmark",
  "qdrant-client",

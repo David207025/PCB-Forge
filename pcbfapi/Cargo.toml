@@ -36,6 +36,7 @@ pulldown-cmark-to-cmark = "22.0.1"
 lopdf = "0.44.0"
 qdrant-client = "1.19.0"
 fastembed = "6.0.3"
+ort = { version = "2.0.0-rc.9", features = ["download-binaries", "copy-dylibs"] }
 csv = "1.4.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
