@@ -1,0 +1,14 @@
+
+[workspace.metadata.dist]
+# The cargo-dist version to use in CI
+cargo-dist-version = "0.32.0"
+# CI provider
+ci = ["github"]
+# Target triple matrix (Intel macOS is excluded here)
+targets = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
+# Installers to generate (enabling "msi" recreates the wix/ directory)
+installers = ["shell", "powershell", "homebrew", "msi"]
+# Homebrew tap target
+tap = "David207025/homebrew-pcb-forge"
+# GitHub release publisher
+publishers = ["github"]
