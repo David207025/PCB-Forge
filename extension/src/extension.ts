@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
-import * as path from "path";
-import * as fs from "fs";
+import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { spawn, ChildProcess } from 'child_process';
 
+const API_BASE = 'http://127.0.0.1:47210';
+
 let activeWebviewPanel: vscode.WebviewPanel | undefined = undefined;
-let currentActiveRoute: string = '/';
-let treeProviderInstance: PcbForgeTreeProvider | undefined = undefined;
 let cliProcess: ChildProcess | undefined = undefined;
 let isCliAvailable: boolean = true;
 
@@ -13,217 +14,257 @@ export function activate(context: vscode.ExtensionContext) {
   checkCliAvailability();
   startCliProcess();
 
-  treeProviderInstance = new PcbForgeTreeProvider();
-  vscode.window.registerTreeDataProvider('pcbForgeControlPanel', treeProviderInstance);
-
-  let openDashboardCommand = vscode.commands.registerCommand('pcb-forge.openDashboard', (routePath?: string) => {
-    const targetPath = routePath || '/';
-    currentActiveRoute = targetPath;
-    treeProviderInstance?.refresh();
-
-    const panel = ensureWebviewLoaded(context);
-    if (panel) {
+  // Primary command: opens the root home screen inside the webview panel
+  context.subscriptions.push(
+    vscode.commands.registerCommand('pcb-forge.openDashboard', (routePath?: string) => {
+      const targetPath = routePath || '/';
+      const panel = ensureWebviewLoaded(context);
       panel.reveal(vscode.ViewColumn.One);
       panel.webview.postMessage({ command: 'navigate', path: targetPath });
-    }
-  });
+    })
+  );
 
-  context.subscriptions.push(openDashboardCommand);
+  // Command: Create Template (/init-template)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('pcb-forge.createTemplate', async () => {
+      const templateName = await vscode.window.showInputBox({
+        prompt: 'Enter new template name',
+        placeHolder: 'e.g., default-a4'
+      });
+      if (!templateName) return;
+
+      try {
+        const res = await fetch(`${API_BASE}/init-template`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: templateName })
+        });
+        const body = await res.json() as { status: string; message: string };
+
+        if (res.ok && body.status === 'success') {
+          vscode.window.showInformationMessage(body.message);
+          notifyWebviewTemplateUpdate();
+        } else {
+          vscode.window.showErrorMessage(body.message || 'Failed to initialize template.');
+        }
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`API Connection Error: ${err.message}`);
+      }
+    })
+  );
+
+  // Command: Create Project (/init-project)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('pcb-forge.createProject', async () => {
+      const templateName = await vscode.window.showInputBox({
+        prompt: 'Enter target template name',
+        placeHolder: 'e.g., standard-template'
+      });
+      if (!templateName) return;
+
+      const folderUri = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        openLabel: 'Select Project Directory'
+      });
+      if (!folderUri || folderUri.length === 0) return;
+
+      const targetPath = path.join(folderUri[0].fsPath, `${templateName}.json`);
+
+      try {
+        const res = await fetch(`${API_BASE}/init-project`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ template: templateName, path: targetPath })
+        });
+        const body = await res.json() as { status: string; message: string };
+
+        if (res.ok && body.status === 'success') {
+          vscode.window.showInformationMessage(body.message);
+        } else {
+          vscode.window.showErrorMessage(body.message || 'Failed to initialize project.');
+        }
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`API Connection Error: ${err.message}`);
+      }
+    })
+  );
+
+  // Command: Generate Schemas for All Templates (/gen-templates)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('pcb-forge.generateTemplates', async () => {
+      try {
+        const res = await fetch(`${API_BASE}/gen-templates`, { method: 'POST' });
+        const body = await res.json() as { status: string; message: string };
+
+        if (res.ok && body.status === 'success') {
+          vscode.window.showInformationMessage(body.message);
+          notifyWebviewTemplateUpdate();
+        } else {
+          vscode.window.showErrorMessage(body.message || 'Failed to generate templates.');
+        }
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`API Connection Error: ${err.message}`);
+      }
+    })
+  );
+
+  // Command: Generate Project PDF (/gen-project)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('pcb-forge.generateProject', async () => {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (!workspaceFolders) {
+        vscode.window.showErrorMessage('No workspace open in VS Code.');
+        return;
+      }
+
+      const rootPath = workspaceFolders[0].uri.fsPath;
+      const envPath = path.join(rootPath, '.env');
+      let targetFile: string | null = null;
+
+      if (fs.existsSync(envPath)) {
+        const envContent = fs.readFileSync(envPath, 'utf8');
+        const match = envContent.match(/^PROJECT_PATH=(.+)$/m);
+        if (match) targetFile = match[1].trim();
+      }
+
+      if (!targetFile) {
+        const fileUri = await vscode.window.showOpenDialog({
+          canSelectFiles: true,
+          canSelectFolders: false,
+          filters: { 'JSON Project': ['json'] },
+          openLabel: 'Select Project File'
+        });
+        if (!fileUri || fileUri.length === 0) return;
+        targetFile = fileUri[0].fsPath;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/gen-project`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: targetFile })
+        });
+        const body = await res.json() as { status: string; message: string };
+
+        if (res.ok && body.status === 'success') {
+          vscode.window.showInformationMessage(body.message);
+        } else {
+          vscode.window.showErrorMessage(body.message || 'Failed to generate project.');
+        }
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`API Connection Error: ${err.message}`);
+      }
+    })
+  );
 }
 
 export function deactivate() {
   if (cliProcess) {
-    console.log('🛑 Stopping PCB Forge background CLI process...');
     cliProcess.kill();
     cliProcess = undefined;
   }
 }
 
 function checkCliAvailability() {
-  const cliBinaryName = 'pcbfapi';
-  const checkCommand = process.platform === 'win32' ? `where ${cliBinaryName}` : `which ${cliBinaryName}`;
-  execAsyncCommand(checkCommand, (success) => {
-    isCliAvailable = success;
-    treeProviderInstance?.refresh();
-  });
-}
-
-function execAsyncCommand(command: string, callback: (exists: boolean) => void) {
+  const checkCommand = process.platform === 'win32' ? 'where pcbfapi' : 'which pcbfapi';
   const { exec } = require('child_process');
-  exec(command, (error: any) => {
-    callback(!error);
+  exec(checkCommand, (error: any) => {
+    isCliAvailable = !error;
   });
 }
 
 function startCliProcess() {
   try {
-    console.log('🚀 Attempting to start background CLI process...');
-
-    // Replace 'agy-ide' with your actual background CLI command or daemon binary if it's separate
-    cliProcess = spawn('pcbfapi', [], {
-      detached: false,
-      shell: true // Uses system shell so it resolves PATH variables correctly
-    });
-
-    cliProcess.stdout?.on('data', (data) => {
-      console.log(`[CLI STDOUT]: ${data.toString()}`);
-    });
-
-    cliProcess.stderr?.on('data', (data) => {
-      console.error(`[CLI STDERR]: ${data.toString()}`);
-    });
-
-    cliProcess.on('error', (err) => {
-      console.error('❌ Failed to start CLI process spawn:', err);
-    });
-
-    cliProcess.on('exit', (code, signal) => {
-      console.log(`⚠️ CLI process exited with code ${code} and signal ${signal}`);
-    });
-
+    cliProcess = spawn('pcbfapi', [], { detached: false, shell: true });
+    cliProcess.stdout?.on('data', (d) => console.log(`[CLI STDOUT]: ${d}`));
+    cliProcess.stderr?.on('data', (d) => console.error(`[CLI STDERR]: ${d}`));
   } catch (e) {
-    console.error('❌ Exception starting CLI process:', e);
+    console.error('Failed to launch pcbfapi:', e);
   }
 }
 
 function ensureWebviewLoaded(context: vscode.ExtensionContext): vscode.WebviewPanel {
-  if (activeWebviewPanel) {
-    activeWebviewPanel.reveal(vscode.ViewColumn.One);
-    return activeWebviewPanel;
-  }
+  if (activeWebviewPanel) return activeWebviewPanel;
 
   activeWebviewPanel = vscode.window.createWebviewPanel(
     'pcbForgeWebview',
-    'PCB Forge Dashboard',
+    'PCB Forge',
     vscode.ViewColumn.One,
-    {
-      enableScripts: true,
-      retainContextWhenHidden: true
-    }
+    { enableScripts: true, retainContextWhenHidden: true }
   );
 
   activeWebviewPanel.webview.html = getWebviewHtml(context, activeWebviewPanel.webview);
 
+  // Handle messages sent from React frontend to extension
+  activeWebviewPanel.webview.onDidReceiveMessage(async (message) => {
+    switch (message.command) {
+      case 'requestTemplatesState':
+        sendTemplatesState();
+        break;
+      case 'runVSCodeCommand':
+        vscode.commands.executeCommand(message.commandName);
+        break;
+    }
+  });
+
   activeWebviewPanel.onDidDispose(() => {
     activeWebviewPanel = undefined;
-    currentActiveRoute = '';
-    treeProviderInstance?.refresh();
   }, null, context.subscriptions);
 
   return activeWebviewPanel;
 }
 
-function getWebviewHtml(context: vscode.ExtensionContext, webview: vscode.Webview): string {
-  const htmlPath = path.join(context.extensionPath, 'web', 'index.html');
+/** Reads ~/.pcb-forge/templates to determine generated vs non-generated status */
+function sendTemplatesState() {
+  if (!activeWebviewPanel) return;
 
+  const homeDir = os.homedir();
+  const srcDir = path.join(homeDir, '.pcb-forge', 'templates', 'src');
+  const genDir = path.join(homeDir, '.pcb-forge', 'templates', 'generated');
+
+  const templates: Array<{ name: string; isGenerated: boolean }> = [];
+
+  if (fs.existsSync(srcDir)) {
+    const folders = fs.readdirSync(srcDir, { withFileTypes: true });
+    for (const folder of folders) {
+      if (folder.isDirectory()) {
+        const schemaPath = path.join(genDir, `${folder.name}.schema.json`);
+        templates.push({
+          name: folder.name,
+          isGenerated: fs.existsSync(schemaPath)
+        });
+      }
+    }
+  }
+
+  activeWebviewPanel.webview.postMessage({
+    command: 'setTemplatesState',
+    templates
+  });
+}
+
+function notifyWebviewTemplateUpdate() {
+  setTimeout(() => sendTemplatesState(), 500);
+}
+
+function getWebviewHtml(context: vscode.ExtensionContext, webview: vscode.Webview): string {
+  const htmlPath = path.join(context.extensionPath, 'dist', 'index.html');
   if (!fs.existsSync(htmlPath)) {
     return `<!DOCTYPE html><html><body><h2>Web UI Build Not Found</h2></body></html>`;
   }
 
-  let htmlContent = fs.readFileSync(htmlPath, 'utf8');
+  let html = fs.readFileSync(htmlPath, 'utf8');
+  const scriptUri = webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, 'dist', 'assets', 'index.js')));
+  const stylesUri = webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, 'dist', 'assets', 'index.css')));
 
-  const scriptUri = webview.asWebviewUri(
-    vscode.Uri.file(path.join(context.extensionPath, 'web', 'assets', 'index.js'))
-  );
-  const stylesUri = webview.asWebviewUri(
-    vscode.Uri.file(path.join(context.extensionPath, 'web', 'assets', 'index.css'))
-  );
-
-  htmlContent = htmlContent
+  html = html
     .replace(/<script.*?src="([^"]*?)".*?>.*?<\/script>/is, `<script type="module" src="${scriptUri}"></script>`)
     .replace(/<link rel="stylesheet".*?href="([^"]*?)".*?>/is, `<link rel="stylesheet" href="${stylesUri}">`);
 
-  if (!htmlContent.includes(scriptUri.toString())) {
-    htmlContent = htmlContent
-      .replace(/"assets\/index\.js"/g, `"${scriptUri}"`)
-      .replace(/"assets\/index\.css"/g, `"${stylesUri}"`)
-      .replace(/\/assets\/index\.js/g, scriptUri.toString())
-      .replace(/\/assets\/index\.css/g, stylesUri.toString());
-  }
+  const cspMeta = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-eval'; img-src ${webview.cspSource} https:; connect-src ${webview.cspSource} http://127.0.0.1:47210;">`;
+  const cliScript = `<script>window.IS_CLI_AVAILABLE = ${isCliAvailable};</script>`;
 
-  const cliStatusScript = `<script>window.IS_CLI_AVAILABLE = ${isCliAvailable};</script>`;
-  const cspMeta = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'unsafe-eval'; img-src ${webview.cspSource} https:; connect-src ${webview.cspSource};">`;
-  htmlContent = htmlContent.replace('<head>', `<head>\n    ${cspMeta}\n    ${cliStatusScript}`);
-
-  return htmlContent;
-}
-
-class TreeCategoryItem extends vscode.TreeItem {
-  constructor(public readonly label: string, collapsibleState: vscode.TreeItemCollapsibleState, icon: string) {
-    super(label, collapsibleState);
-    this.iconPath = new vscode.ThemeIcon(icon);
-  }
-}
-
-class PcbForgeTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
-  private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | void>();
-  readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | void> = this._onDidChangeTreeData.event;
-
-  refresh(): void {
-    this._onDidChangeTreeData.fire();
-  }
-
-  getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
-    return element;
-  }
-
-  getChildren(element?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
-    if (!element) {
-      const rootItems: vscode.TreeItem[] = [];
-
-      const tabsFolder = new TreeCategoryItem('Tabs', vscode.TreeItemCollapsibleState.Expanded, 'folder');
-      rootItems.push(tabsFolder);
-
-      const actionsFolder = new TreeCategoryItem('Actions', vscode.TreeItemCollapsibleState.Expanded, 'folder');
-      rootItems.push(actionsFolder);
-
-      if (!isCliAvailable) {
-        const warningItem = new TreeCategoryItem('CLI Missing!', vscode.TreeItemCollapsibleState.None, 'warning');
-        warningItem.description = 'Not found on PATH';
-        rootItems.push(warningItem);
-      }
-
-      return Promise.resolve(rootItems);
-    }
-
-    if (element.label === 'Tabs') {
-      const isPanelOpen = activeWebviewPanel !== undefined;
-      const isHomeActive = isPanelOpen && currentActiveRoute === '/';
-      const isSettingsActive = isPanelOpen && currentActiveRoute === '/settings';
-
-      const homeItem = new vscode.TreeItem('Home Dashboard', vscode.TreeItemCollapsibleState.None);
-      homeItem.iconPath = new vscode.ThemeIcon('home'); // Icon preserved unchanged
-      homeItem.description = isHomeActive ? '● Active' : '';
-      homeItem.command = {
-        command: 'pcb-forge.openDashboard',
-        title: 'Open Home',
-        arguments: ['/']
-      };
-
-      const settingsItem = new vscode.TreeItem('Settings', vscode.TreeItemCollapsibleState.None);
-      settingsItem.iconPath = new vscode.ThemeIcon('settings'); // Icon preserved unchanged
-      settingsItem.description = isSettingsActive ? '● Active' : '';
-      settingsItem.command = {
-        command: 'pcb-forge.openDashboard',
-        title: 'Open Settings',
-        arguments: ['/settings']
-      };
-
-      return Promise.resolve([homeItem, settingsItem]);
-    }
-
-    if (element.label === 'Actions') {
-      const preCheckItem = new vscode.TreeItem('Run Pre-check', vscode.TreeItemCollapsibleState.None);
-      preCheckItem.iconPath = new vscode.ThemeIcon('play');
-      preCheckItem.command = {
-        command: 'pcb-forge.openDashboard',
-        title: 'Run Pre-check',
-        arguments: ['/pre-check'] // Fixed: uses its own dedicated route instead of triggering '/'
-      };
-
-      return Promise.resolve([preCheckItem]);
-    }
-
-    return Promise.resolve([]);
-  }
+  return html.replace('<head>', `<head>\n    ${cspMeta}\n    ${cliScript}`);
 }

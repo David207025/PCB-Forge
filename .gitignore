@@ -1,5 +1,6 @@
 # Build and packaging outputs
 /build/
+/dist/
 *.vsix
 
 # Node modules across the monorepo
@@ -9,11 +10,18 @@
 
 # Compiled frontend and extension outputs
 /extension/web-ui/dist/
+/extension/web/
 /extension/out/
 /extension/binaries/
 
-# Rust CLI build artifacts
-/target
+# Rust build artifacts
+/target/
+
+# PCB Forge generated files and caches
+**/.pcb-forge/
+test/*.pdf
+test/test.pdf
+*.pdf
 
 # IDE and OS specific files
 .DS_Store

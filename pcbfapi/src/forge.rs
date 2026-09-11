@@ -1,7 +1,24 @@
-use crate::definitions::{InMemoryWorld, ProjectConfig, Template};
+//! Forge engine — file resolution, asset export, and PDF generation.
+//!
+//! This is the core module of the PCB Forge API. It provides:
+//!
+//! - **Directory helpers** — canonical paths for the `~/.pcb-forge/` directory
+//!   tree (cache, schemas, template sources and generated schemas).
+//! - **KiCad CLI discovery** — locates `kicad-cli` on the host system across
+//!   macOS, Windows, and Linux.
+//! - **Asset resolution** — converts project paths (`.kicad_sch`, `.kicad_pcb`,
+//!   `.md`, images) into relative paths, running KiCad exports to SVG as needed
+//!   and caching the results to avoid redundant re-exports.
+//! - **SVG post-processing** — removes background rectangles and recomputes
+//!   tight viewBox bounds for cleaner embedded images.
+//! - **Typst compilation** — builds the script that drives the in-memory Typst
+//!   engine and produces per-page and full-project PDFs.
+//! - **Schema generation** — produces JSON Schema files used by IDEs for
+//!   `meta.json` and project JSON validation.
+
+use crate::definitions::{InMemoryWorld, PageConfig, ProjectConfig, Template};
 use schemars::schema_for;
 use serde_json::json;
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -9,6 +26,18 @@ use std::process::Command;
 use pulldown_cmark::{CowStr, Event, Parser, Tag};
 use pulldown_cmark_to_cmark::cmark;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Path & Typst string utilities
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Helper to convert a path to a relative path string with respect to `base_dir` if possible.
+pub fn make_relative_path(path: &Path, base_dir: &Path) -> String {
+  path.strip_prefix(base_dir)
+    .map(|p| p.to_string_lossy().to_string())
+    .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
+/// Escapes a Rust string for safe embedding inside a Typst string literal.
 fn escape_typst_string(s: &str) -> String {
   s.replace('\\', "\\\\")
     .replace('"', "\\\"")
@@ -17,7 +46,7 @@ fn escape_typst_string(s: &str) -> String {
     .replace('\t', "\\t")
 }
 
-/// Recursively converts a `serde_json::Value` into native Typst syntax literal
+/// Recursively converts a [`serde_json::Value`] into a Typst expression literal.
 pub fn json_to_typst(val: &serde_json::Value) -> String {
   match val {
     serde_json::Value::Null => "none".to_string(),
@@ -57,6 +86,11 @@ pub fn json_to_typst(val: &serde_json::Value) -> String {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Directory helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns the root `~/.pcb-forge/` directory path.
 pub fn get_home_dir() -> PathBuf {
   let home = std::env::var("HOME")
     .or_else(|_| std::env::var("USERPROFILE"))
@@ -65,6 +99,7 @@ pub fn get_home_dir() -> PathBuf {
   Path::new(&home).join(".pcb-forge")
 }
 
+/// Returns `~/.pcb-forge/cache/`, creating it if it does not exist.
 pub fn get_cache_dir() -> PathBuf {
   let path = get_home_dir().join("cache");
   if !path.exists() {
@@ -73,6 +108,7 @@ pub fn get_cache_dir() -> PathBuf {
   path
 }
 
+/// Returns `~/.pcb-forge/schemas/`, creating it if it does not exist.
 pub fn get_schemas_dir() -> PathBuf {
   let path = get_home_dir().join("schemas");
   if !path.exists() {
@@ -81,6 +117,7 @@ pub fn get_schemas_dir() -> PathBuf {
   path
 }
 
+/// Returns `~/.pcb-forge/templates/src/`, creating it if it does not exist.
 pub fn get_templates_src_dir() -> PathBuf {
   let path = get_home_dir().join("templates").join("src");
   if !path.exists() {
@@ -89,6 +126,7 @@ pub fn get_templates_src_dir() -> PathBuf {
   path
 }
 
+/// Returns `~/.pcb-forge/templates/generated/`, creating it if it does not exist.
 pub fn get_templates_generated_dir() -> PathBuf {
   let path = get_home_dir().join("templates").join("generated");
   if !path.exists() {
@@ -97,7 +135,11 @@ pub fn get_templates_generated_dir() -> PathBuf {
   path
 }
 
-/// Discovers the location of `kicad-cli` on the system.
+// ─────────────────────────────────────────────────────────────────────────────
+// KiCad CLI discovery
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Discovers the absolute path to the `kicad-cli` executable.
 pub fn get_kicad_cli_path() -> Result<PathBuf, String> {
   if Command::new("kicad-cli").arg("--version").output().is_ok() {
     return Ok(PathBuf::from("kicad-cli"));
@@ -149,6 +191,10 @@ pub fn get_kicad_cli_path() -> Result<PathBuf, String> {
   
   Err("kicad-cli executable could not be found in PATH or standard installation directories.".to_string())
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SVG attribute parsing helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn extract_attr_str(tag: &str, attr_name: &str) -> Option<String> {
   let pattern = format!("{}=\"", attr_name);
@@ -209,7 +255,10 @@ fn parse_svg_viewbox(svg: &str) -> Option<(f64, f64, f64, f64)> {
   None
 }
 
-/// Post-processes an SVG to remove background rectangles and trim whitespace.
+// ─────────────────────────────────────────────────────────────────────────────
+// SVG post-processing
+// ─────────────────────────────────────────────────────────────────────────────
+
 pub fn trim_svg_whitespace(svg_path: &Path) -> Result<(), String> {
   let raw_content = fs::read_to_string(svg_path)
     .map_err(|e| format!("Failed to read SVG {:?}: {}", svg_path, e))?;
@@ -217,7 +266,6 @@ pub fn trim_svg_whitespace(svg_path: &Path) -> Result<(), String> {
   let orig_vb = parse_svg_viewbox(&raw_content);
   let (orig_w, orig_h) = orig_vb.map(|(_, _, w, h)| (w, h)).unwrap_or((0.0, 0.0));
   
-  // 1. Strip background rectangle tags matching full canvas size or 100% dimensions
   let mut content = String::with_capacity(raw_content.len());
   let mut pos = 0;
   while let Some(start) = raw_content[pos..].find("<rect") {
@@ -234,7 +282,7 @@ pub fn trim_svg_whitespace(svg_path: &Path) -> Result<(), String> {
       let is_canvas_bg = orig_w > 0.0 && (w - orig_w).abs() < 10.0 && (h - orig_h).abs() < 10.0;
       
       if is_percent_bg || is_canvas_bg {
-        pos = abs_end; // Omit the background rectangle entirely
+        pos = abs_end;
         continue;
       }
       
@@ -247,7 +295,6 @@ pub fn trim_svg_whitespace(svg_path: &Path) -> Result<(), String> {
   }
   content.push_str(&raw_content[pos..]);
   
-  // 2. Calculate graphic bounding box for tight cropping
   let mut min_x = f64::MAX;
   let mut min_y = f64::MAX;
   let mut max_x = f64::MIN;
@@ -351,6 +398,11 @@ pub fn trim_svg_whitespace(svg_path: &Path) -> Result<(), String> {
   Ok(())
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Path resolution helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Resolves a raw path string into a relative path string relative to `base_dir`.
 pub fn resolve_project_path(raw_path_str: &str, base_dir: &Path) -> String {
   if raw_path_str.trim().is_empty() {
     return "".to_string();
@@ -368,8 +420,8 @@ pub fn resolve_project_path(raw_path_str: &str, base_dir: &Path) -> String {
     base_dir.join(p)
   };
   
-  let final_path_buf = resolved_file_path.canonicalize().unwrap_or(resolved_file_path);
-  let final_str = final_path_buf.to_string_lossy().to_string();
+  let canonical = resolved_file_path.canonicalize().unwrap_or(resolved_file_path);
+  let final_str = canonical.to_string_lossy().to_string();
   
   if let Some(layers) = layers_option {
     format!("{};{}", final_str, layers)
@@ -378,56 +430,11 @@ pub fn resolve_project_path(raw_path_str: &str, base_dir: &Path) -> String {
   }
 }
 
-pub fn preprocess_markdown_images(md_content: &str, md_file_path: &Path) -> String {
-  let md_dir = md_file_path.parent().unwrap_or_else(|| Path::new(""));
-  
-  let parser = Parser::new(md_content);
-  let events = parser.map(|event| match event {
-    Event::Start(Tag::Image {
-                   link_type,
-                   dest_url,
-                   title,
-                   id,
-                 }) => {
-      let resolved_url = resolve_image_dest(&dest_url, md_dir);
-      Event::Start(Tag::Image {
-        link_type,
-        dest_url: CowStr::Boxed(resolved_url.into_boxed_str()),
-        title,
-        id,
-      })
-    }
-    _ => event,
-  });
-  
-  let mut buf = String::with_capacity(md_content.len());
-  cmark(events, &mut buf).unwrap_or_default();
-  buf
-}
-
-fn resolve_image_dest(url: &str, base_dir: &Path) -> String {
-  // Ignore remote or data URLs
-  if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("data:") {
-    return url.to_string();
-  }
-  
-  let p = Path::new(url);
-  let abs_path = if p.is_absolute() {
-    p.to_path_buf()
-  } else {
-    base_dir.join(p)
-  };
-  
-  // Canonicalize to clean up `.` / `..` segments if file exists
-  abs_path
-    .canonicalize()
-    .unwrap_or(abs_path)
-    .to_string_lossy()
-    .to_string()
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Content asset resolution
+// ─────────────────────────────────────────────────────────────────────────────
 
 pub fn resolve_content_asset_with_dir(
-  content_type: &str,
   raw_path_str: &str,
   extra_args: &[String],
   custom_out_dir: Option<&Path>,
@@ -441,13 +448,9 @@ pub fn resolve_content_asset_with_dir(
     None => (raw_path_str.trim(), None),
   };
   
-  if file_path_str.is_empty() {
-    return Ok("".to_string());
-  }
-  
   let input_path = Path::new(file_path_str);
   if !input_path.exists() {
-    return Err(format!("Source file does not exist at path: {}", file_path_str));
+    return Err(format!("Source file does not exist: {}", file_path_str));
   }
   
   let extension = input_path
@@ -456,25 +459,8 @@ pub fn resolve_content_asset_with_dir(
     .unwrap_or("")
     .to_lowercase();
   
-  // Pass through static image formats directly
-  if matches!(extension.as_str(), "svg" | "png" | "jpg" | "jpeg") {
-    let canonical = input_path
-      .canonicalize()
-      .map_err(|e| format!("Failed to resolve path {}: {}", file_path_str, e))?;
-    return Ok(canonical.to_string_lossy().to_string());
-  }
-  
-  if extension != "kicad_pcb" && extension != "kicad_sch" && extension != "md" {
-    return Err(format!(
-      "Unsupported file format '.{}'. Expected .kicad_pcb, .kicad_sch, .md, .svg, .png, or .jpg",
-      extension
-    ));
-  }
-  
   let out_dir = custom_out_dir.map(PathBuf::from).unwrap_or_else(get_cache_dir);
-  if !out_dir.exists() {
-    let _ = fs::create_dir_all(&out_dir);
-  }
+  let out_dir = out_dir.canonicalize().unwrap_or(out_dir);
   
   let file_stem = input_path
     .file_stem()
@@ -483,176 +469,148 @@ pub fn resolve_content_asset_with_dir(
   
   let metadata = fs::metadata(input_path)
     .map_err(|e| format!("Failed to read metadata for {}: {}", file_path_str, e))?;
-  
-  let modified_time = metadata
-    .modified()
-    .map_err(|e| format!("Failed to read modification time: {}", e))?
-    .duration_since(std::time::UNIX_EPOCH)
-    .unwrap_or_default()
-    .as_secs();
-  
-  // --- NEW: PROCESS MARKDOWN FILES ---
-  if extension == "md" {
-    let md_raw = fs::read_to_string(input_path)
-      .map_err(|e| format!("Failed to read markdown file {:?}: {}", input_path, e))?;
-    
-    // Rewrite image links in AST from relative to absolute paths
-    let processed_md = preprocess_markdown_images(&md_raw, input_path);
-    
-    let cached_md_name = format!("{}_{}_{}.md", file_stem, content_type, modified_time);
-    let cached_md_path = out_dir.join(&cached_md_name);
-    
-    fs::write(&cached_md_path, processed_md)
-      .map_err(|e| format!("Failed to write processed markdown to {:?}: {}", cached_md_path, e))?;
-    
-    let canonical = cached_md_path
-      .canonicalize()
-      .map_err(|e| format!("Failed to resolve processed markdown path {:?}: {}", cached_md_path, e))?;
-    return Ok(canonical.to_string_lossy().to_string());
-  }
-  
-  // --- KICAD EXPORTS ---
-  let kicad_cli = get_kicad_cli_path()?;
-  
-  let args_hash = if extra_args.is_empty() {
-    0
-  } else {
-    let mut hasher = DefaultHasher::new();
-    extra_args.hash(&mut hasher);
-    hasher.finish()
-  };
+  let modified_time = metadata.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
   
   match extension.as_str() {
+    "svg" | "png" | "jpg" | "jpeg" | "csv" | "json" => {
+      let canonical = input_path.canonicalize().map_err(|e| e.to_string())?;
+      Ok(make_relative_path(&canonical, &out_dir))
+    }
+    "md" => {
+      let md_raw = fs::read_to_string(input_path).map_err(|e| e.to_string())?;
+      let processed_md = preprocess_markdown_and_copy_dependencies(&md_raw, input_path, &out_dir);
+      let cached_md_name = format!("{}_{}.md", file_stem, modified_time);
+      let cached_md_path = out_dir.join(&cached_md_name);
+      fs::write(&cached_md_path, processed_md).map_err(|e| e.to_string())?;
+      let canonical = cached_md_path.canonicalize().unwrap_or(cached_md_path);
+      Ok(make_relative_path(&canonical, &out_dir))
+    }
     "kicad_pcb" => {
-      let layers = match layers_option {
-        Some(l) if !l.is_empty() => l,
-        _ => return Ok("".to_string()),
-      };
-      
+      let layers = layers_option.unwrap_or("F.Cu,B.Cu");
       let layers_slug = layers.replace(['/', '\\', ' ', ':', ';', ','], "_");
-      let cached_svg_name = format!("{}_{}_{}_{}_{:x}.svg", file_stem, content_type, modified_time, layers_slug, args_hash);
+      let cached_svg_name = format!("{}_{}_{}.svg", file_stem, modified_time, layers_slug);
       let cached_svg_path = out_dir.join(&cached_svg_name);
       
-      if cached_svg_path.exists() {
-        let canonical = cached_svg_path
-          .canonicalize()
-          .map_err(|e| format!("Failed to resolve cached path {:?}: {}", cached_svg_path, e))?;
-        return Ok(canonical.to_string_lossy().to_string());
+      if !cached_svg_path.exists() {
+        let kicad_cli = get_kicad_cli_path()?;
+        let status = Command::new(&kicad_cli)
+          .args([
+            "pcb", "export", "svg", "--mode-single", "--exclude-drawing-sheet",
+            "--page-size-mode", "2", "--layers", layers,
+            "--output", cached_svg_path.to_str().unwrap(),
+            input_path.to_str().unwrap(),
+          ])
+          .args(extra_args)
+          .status()
+          .map_err(|e| e.to_string())?;
+        
+        if !status.success() {
+          return Err(format!("kicad-cli PCB export failed for {}", file_path_str));
+        }
+        trim_svg_whitespace(&cached_svg_path)?;
       }
-      
-      let status = Command::new(&kicad_cli)
-        .args([
-          "pcb",
-          "export",
-          "svg",
-          "--mode-single",
-          "--exclude-drawing-sheet",
-          "--page-size-mode",
-          "2",
-          "--layers",
-          layers,
-          "--output",
-          cached_svg_path.to_str().unwrap(),
-          input_path.to_str().unwrap(),
-        ])
-        .args(extra_args)
-        .status()
-        .map_err(|e| format!("Failed to run kicad-cli ({:?}): {}", kicad_cli, e))?;
-      
-      if !status.success() {
-        return Err(format!(
-          "kicad-cli failed with exit code {:?} while exporting PCB {}",
-          status.code(),
-          file_path_str
-        ));
-      }
-      trim_svg_whitespace(&cached_svg_path)?;
-      
-      let canonical = cached_svg_path
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve generated cached path {:?}: {}", cached_svg_path, e))?;
-      Ok(canonical.to_string_lossy().to_string())
+      let canonical = cached_svg_path.canonicalize().unwrap_or(cached_svg_path);
+      Ok(make_relative_path(&canonical, &out_dir))
     }
     "kicad_sch" => {
-      let cached_svg_name = format!("{}_{}_{}_{:x}.svg", file_stem, content_type, modified_time, args_hash);
+      let cached_svg_name = format!("{}_{}.svg", file_stem, modified_time);
       let cached_svg_path = out_dir.join(&cached_svg_name);
       
-      if cached_svg_path.exists() {
-        let canonical = cached_svg_path
-          .canonicalize()
-          .map_err(|e| format!("Failed to resolve cached path {:?}: {}", cached_svg_path, e))?;
-        return Ok(canonical.to_string_lossy().to_string());
+      if !cached_svg_path.exists() {
+        let kicad_cli = get_kicad_cli_path()?;
+        let output = Command::new(&kicad_cli)
+          .args([
+            "sch", "export", "svg", "--exclude-drawing-sheet", "--no-background-color",
+            "--pages", "1", "--output", out_dir.to_str().unwrap(),
+            input_path.to_str().unwrap(),
+          ])
+          .args(extra_args)
+          .output()
+          .map_err(|e| e.to_string())?;
+        
+        if !output.status.success() {
+          return Err("kicad-cli SCH export failed".to_string());
+        }
+        trim_svg_whitespace(&cached_svg_path)?;
       }
-      
-      let output = Command::new(&kicad_cli)
-        .args([
-          "sch",
-          "export",
-          "svg",
-          "--exclude-drawing-sheet",
-          "--no-background-color",
-          "--pages",
-          "1",
-          "--output",
-          out_dir.to_str().unwrap(),
-          input_path.to_str().unwrap(),
-        ])
-        .args(extra_args)
-        .output()
-        .map_err(|e| format!("Failed to run kicad-cli ({:?}): {}", kicad_cli, e))?;
-      
-      if !output.status.success() {
-        return Err(format!(
-          "kicad-cli failed with exit code {:?}: {}",
-          output.status.code(),
-          String::from_utf8_lossy(&output.stderr)
-        ));
-      }
-      
-      let combined_log = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-      );
-      
-      let generated_svg_path = combined_log
-        .lines()
-        .find_map(|line| {
-          if line.contains("Plotted to '") {
-            let start = line.find('\'')? + 1;
-            let end = line.rfind('\'')?;
-            if start < end {
-              return Some(PathBuf::from(&line[start..end]));
-            }
-          }
-          None
-        })
-        .unwrap_or_else(|| out_dir.join(format!("{}.svg", file_stem)));
-      
-      if generated_svg_path.exists() {
-        fs::rename(&generated_svg_path, &cached_svg_path).map_err(|e| {
-          format!(
-            "Failed to rename generated SVG from {:?} to {:?}: {}",
-            generated_svg_path, cached_svg_path, e
-          )
-        })?;
-      } else {
-        return Err(format!(
-          "Generated SVG was not found at expected location: {:?}",
-          generated_svg_path
-        ));
-      }
-      trim_svg_whitespace(&cached_svg_path)?;
-      
-      let canonical = cached_svg_path
-        .canonicalize()
-        .map_err(|e| format!("Failed to resolve generated cached path {:?}: {}", cached_svg_path, e))?;
-      Ok(canonical.to_string_lossy().to_string())
+      let canonical = cached_svg_path.canonicalize().unwrap_or(cached_svg_path);
+      Ok(make_relative_path(&canonical, &out_dir))
     }
-    _ => unreachable!(),
+    _ => Err(format!("Unsupported extension .{}", extension)),
   }
 }
 
+pub fn get_template_variants(template_name: &str) -> Vec<String> {
+  let template_dir = get_templates_src_dir().join(template_name);
+  let mut variants = Vec::new();
+  
+  if let Ok(entries) = fs::read_dir(&template_dir) {
+    for entry in entries.flatten() {
+      let path = entry.path();
+      if path.is_dir() && path.join("layout.typ").exists() {
+        if let Some(name) = entry.file_name().to_str() {
+          if !name.starts_with('.') {
+            variants.push(name.to_string());
+          }
+        }
+      }
+    }
+  }
+  
+  if variants.is_empty() {
+    variants.push("default".to_string());
+  } else {
+    variants.sort_by(|a, b| {
+      if a == "default" {
+        std::cmp::Ordering::Less
+      } else if b == "default" {
+        std::cmp::Ordering::Greater
+      } else {
+        a.cmp(b)
+      }
+    });
+  }
+  
+  variants
+}
+
+pub fn find_page_layout_file(
+  template_name: &str,
+  page_schema: &str,
+  project_dir: &Path,
+) -> Result<PathBuf, String> {
+  let template_dir = get_templates_src_dir().join(template_name);
+  
+  let subfolder_path = template_dir.join(page_schema).join("layout.typ");
+  if subfolder_path.exists() {
+    return Ok(subfolder_path);
+  }
+  
+  let file_path = template_dir.join(format!("{}.typ", page_schema));
+  if file_path.exists() {
+    return Ok(file_path);
+  }
+  
+  let custom_path = project_dir.join(page_schema);
+  if custom_path.exists() && custom_path.is_file() {
+    return Ok(custom_path);
+  }
+  
+  let root_layout = template_dir.join("layout.typ");
+  if root_layout.exists() {
+    return Ok(root_layout);
+  }
+  
+  Err(format!(
+    "Could not locate layout.typ for template '{}' with schema '{}'. Checked:\n  - {}\n  - {}",
+    template_name,
+    page_schema,
+    subfolder_path.display(),
+    root_layout.display(),
+  ))
+}
+
+#[allow(dead_code)]
 pub fn find_layout_file(
   layout_option: Option<&str>,
   schema_option: Option<&str>,
@@ -673,6 +631,10 @@ pub fn find_layout_file(
   
   if let Some(s) = schema_option {
     if let Some(template_name) = extract_template_name_from_schema(s) {
+      let default_subfolder = get_templates_src_dir().join(&template_name).join("default").join("layout.typ");
+      if default_subfolder.exists() {
+        return Ok(default_subfolder);
+      }
       let template_path = get_templates_src_dir().join(&template_name).join("layout.typ");
       if template_path.exists() {
         return Ok(template_path);
@@ -681,14 +643,6 @@ pub fn find_layout_file(
   }
   
   Err("Could not locate layout.typ from project layout field or $schema URI.".to_string())
-}
-
-pub fn resolve_content_asset(
-  content_type: &str,
-  raw_path_str: &str,
-  extra_args: &[String],
-) -> Result<String, String> {
-  resolve_content_asset_with_dir(content_type, raw_path_str, extra_args, None)
 }
 
 pub fn extract_template_name_from_schema(schema_uri: &str) -> Option<String> {
@@ -701,7 +655,10 @@ pub fn extract_template_name_from_schema(schema_uri: &str) -> Option<String> {
   }
 }
 
-/// Generates the base template JSON schema inside ~/.pcb-forge/schemas/template.schema.json
+// ─────────────────────────────────────────────────────────────────────────────
+// Schema generation
+// ─────────────────────────────────────────────────────────────────────────────
+
 pub fn generate_template_schema() -> PathBuf {
   let schemas_dir = get_schemas_dir();
   let schema_path = schemas_dir.join("template.schema.json");
@@ -714,15 +671,32 @@ pub fn generate_template_schema() -> PathBuf {
   schema_path
 }
 
+pub fn get_qdrant_cache_dir() -> PathBuf {
+  let path = get_cache_dir().join("qdrant-cache");
+  if !path.exists() {
+    let _ = fs::create_dir_all(&path);
+  }
+  path
+}
+
+pub fn get_fastembed_cache_dir() -> PathBuf {
+  let path = get_cache_dir().join("fastembed");
+  if !path.exists() {
+    let _ = fs::create_dir_all(&path);
+  }
+  path
+}
+
 pub fn init_directories() {
   let _ = get_cache_dir();
   let _ = get_schemas_dir();
   let _ = get_templates_src_dir();
   let _ = get_templates_generated_dir();
   let _ = generate_template_schema();
+  let _ = get_qdrant_cache_dir();
+  let _ = get_fastembed_cache_dir();
 }
 
-/// Generates the strict project-level JSON schema inside ~/.pcb-forge/templates/generated/{file_stem}.schema.json
 pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
   let generated_dir = get_templates_generated_dir();
   let schema_path = generated_dir.join(format!("{}.schema.json", file_stem));
@@ -751,6 +725,9 @@ pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
     );
   }
   
+  let variants = get_template_variants(file_stem);
+  let default_variant = variants.first().cloned().unwrap_or_else(|| "default".to_string());
+  
   let schema = json!({
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
@@ -759,10 +736,6 @@ pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
       "$schema": {
         "type": "string",
         "description": "Path or URI to the JSON schema"
-      },
-      "layout": {
-        "type": "string",
-        "description": "Path to the Typst layout file (e.g. layout.typ)"
       },
       "global_fields": {
         "type": "object",
@@ -774,6 +747,12 @@ pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
         "items": {
           "type": "object",
           "properties": {
+            "variant": {
+              "type": "string",
+              "enum": variants,
+              "default": default_variant,
+              "description": "Page layout variant from the template (e.g. 'default', 'bom')"
+            },
             "layout": {
               "type": "object",
               "properties": {
@@ -790,12 +769,11 @@ pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
             },
             "content": {
               "type": "string",
-              "enum": ["sch", "pcb", "md"],
-              "description": "Source type: sch (.kicad_sch), pcb (.kicad_pcb), or md (.md)"
+              "description": "Source type: Custom value. The user chooses what to render in the template depending on its value"
             },
             "path": {
               "type": "string",
-              "description": "Path to the reference file (.kicad_sch, .kicad_pcb, or .md)"
+              "description": "Path to the reference file (.kicad_sch, .kicad_pcb, .md, or .csv)"
             },
             "extra_args": {
               "type": "array",
@@ -805,12 +783,12 @@ pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
               "description": "Optional CLI arguments (e.g., ['--black-and-white', '--theme=dark'])"
             }
           },
-          "required": ["layout", "local_fields", "content", "path"],
+          "required": ["variant", "layout", "local_fields", "path"],
           "additionalProperties": false
         }
       }
     },
-    "required": ["layout", "global_fields", "pages"]
+    "required": ["global_fields", "pages"]
   });
   
   if let Ok(json_str) = serde_json::to_string_pretty(&schema) {
@@ -820,13 +798,60 @@ pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
   schema_path
 }
 
-/// Helper to wrap the layout function with the execution stencil loop for Typst compilation
+// ─────────────────────────────────────────────────────────────────────────────
+// Typst compilation helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[allow(dead_code)]
 pub fn build_typst_runner_script(layout_code: &str, project: &ProjectConfig) -> String {
   let project_val = serde_json::to_value(project).unwrap_or(serde_json::Value::Object(Default::default()));
   let project_typst = json_to_typst(&project_val);
   
   format!(
     r#"
+#import "@preview/cmarker:0.1.10"
+
+// --- INJECTED CONTENT HANDLER ---
+#let input_content(content, path) = {{
+  if (content == "pcb" or content == "sch") {{
+    if path != "" {{
+      place(
+        top + left,
+        image(path, width: 100%, height: 100%, fit: "contain"),
+      )
+    }}
+  }} else if (content == "md") {{
+    if path != "" {{
+      place(top + left)[
+        #block(
+          width: 100%,
+          height: 100%,
+          inset: 12pt,
+          cmarker.render(read(path)),
+        )
+      ]
+    }}
+  }} else if (content == "bom") {{
+    if path != "" {{
+      let bom_data = csv(path)
+      let headers = bom_data.at(0)
+      let rows = bom_data.slice(1)
+      place(top + left)[
+        #block(
+          width: 100%,
+          height: 100%,
+          inset: 12pt,
+          table(
+            columns: headers.len(),
+            ..headers.map(h => [*#h*]),
+            ..rows.flatten(),
+          ),
+        )
+      ]
+    }}
+  }}
+}}
+
 // --- INJECTED PROJECT DATA ---
 #let project = {}
 #let global_fields = project.global_fields
@@ -845,97 +870,323 @@ pub fn build_typst_runner_script(layout_code: &str, project: &ProjectConfig) -> 
   )
 }
 
-/// Compiles a `.typ` file or generated script to PDF bytes in memory
-pub fn compile_typst_script(script: String) -> Result<Vec<u8>, String> {
-  InMemoryWorld::compile_pdf(script)
+pub fn compile_typst_script_with_root(script: String, root_dir: Option<&Path>) -> Result<Vec<u8>, String> {
+  InMemoryWorld::compile_pdf_with_root(script, root_dir)
 }
 
-/// Compiles a `.typ` file on disk to a PDF file using the in-memory compiler engine
-pub fn compile_typst(typ_path: &Path, output_pdf_path: &Path) -> Result<(), String> {
-  let script = fs::read_to_string(typ_path)
-    .map_err(|e| format!("Failed to read Typst source file {}: {}", typ_path.display(), e))?;
+pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+  fs::create_dir_all(dst)?;
+  for entry in fs::read_dir(src)? {
+    let entry = entry?;
+    let ty = entry.file_type()?;
+    let dst_path = dst.join(entry.file_name());
+    if ty.is_dir() {
+      copy_dir_all(&entry.path(), &dst_path)?;
+    } else {
+      let _ = fs::copy(entry.path(), dst_path);
+    }
+  }
+  Ok(())
+}
+
+/// Copies all template assets (meta.json, schema.json, bom/, default/, etc.)
+/// into `target_dir` and returns a list of every top-level path created.
+pub fn copy_template_assets(template_name: &str, target_dir: &Path) -> Result<Vec<PathBuf>, String> {
+  let template_dir = get_templates_src_dir().join(template_name);
+  let mut created_paths = Vec::new();
   
-  let pdf_bytes = compile_typst_script(script)?;
+  if !template_dir.exists() {
+    return Ok(created_paths);
+  }
+  
+  let entries = fs::read_dir(&template_dir)
+    .map_err(|e| format!("Failed to read template directory {:?}: {}", template_dir, e))?;
+  
+  for entry in entries.flatten() {
+    let src_path = entry.path();
+    let dst_path = target_dir.join(entry.file_name());
+    
+    if src_path.is_dir() {
+      if copy_dir_all(&src_path, &dst_path).is_ok() {
+        created_paths.push(dst_path.clone());
+      }
+      if let Ok(sub_entries) = fs::read_dir(&src_path) {
+        for sub_entry in sub_entries.flatten() {
+          let sub_src = sub_entry.path();
+          let sub_dst = target_dir.join(sub_entry.file_name());
+          if sub_src.is_dir() {
+            if copy_dir_all(&sub_src, &sub_dst).is_ok() {
+              created_paths.push(sub_dst);
+            }
+          } else if sub_src.is_file() {
+            if fs::copy(&sub_src, &sub_dst).is_ok() {
+              created_paths.push(sub_dst);
+            }
+          }
+        }
+      }
+    } else if src_path.is_file() {
+      if fs::copy(&src_path, &dst_path).is_ok() {
+        created_paths.push(dst_path);
+      }
+    }
+  }
+  
+  Ok(created_paths)
+}
+
+/// Preprocesses Markdown content, resolves and copies all file dependencies (like images)
+/// into the output directory, and updates link references for Typst compilation.
+pub fn preprocess_markdown_and_copy_dependencies(
+  md_content: &str,
+  md_file_path: &Path,
+  out_dir: &Path,
+) -> String {
+  let md_dir = md_file_path.parent().unwrap_or_else(|| Path::new(""));
+  
+  let parser = Parser::new(md_content);
+  let events: Vec<Event> = parser.map(|event| match event {
+    Event::Start(Tag::Image {
+                   link_type,
+                   dest_url,
+                   title,
+                   id,
+                 }) => {
+      let url_str = dest_url.to_string();
+      let resolved_url = if url_str.starts_with("http://") || url_str.starts_with("https://") || url_str.starts_with("data:") {
+        url_str
+      } else {
+        let dep_path = Path::new(&url_str);
+        let abs_dep_path = if dep_path.is_absolute() {
+          dep_path.to_path_buf()
+        } else {
+          md_dir.join(dep_path)
+        };
+        
+        if abs_dep_path.exists() {
+          let canonical_dep = abs_dep_path.canonicalize().unwrap_or(abs_dep_path);
+          
+          // Compute the relative path from the markdown file's directory
+          let rel_path = make_relative_path(&canonical_dep, md_dir);
+          let target_dep_path = out_dir.join(&rel_path);
+          
+          if let Some(parent) = target_dep_path.parent() {
+            let _ = fs::create_dir_all(parent);
+          }
+          let _ = fs::copy(&canonical_dep, &target_dep_path);
+          
+          // Return the relative path so Typst can find it inside out_dir
+          rel_path
+        } else {
+          url_str
+        }
+      };
+      
+      Event::Start(Tag::Image {
+        link_type,
+        dest_url: CowStr::Boxed(resolved_url.into_boxed_str()),
+        title,
+        id,
+      })
+    }
+    _ => event,
+  }).collect();
+  
+  let mut buf = String::with_capacity(md_content.len());
+  cmark(events.into_iter(), &mut buf).unwrap_or_default();
+  buf
+}
+
+/// Compiles a single page into a PDF.
+///
+/// Takes project-wide global fields, a single page configuration, the root project
+/// directory, and the target output PDF path. It:
+/// 1. Locates and copies all template assets into a temporary workspace.
+/// 2. Resolves and compiles/recreates the required page source asset (SVGs, Markdown, BOMs).
+/// 3. Generates and executes the Typst compilation script via in-memory world.
+/// 4. Cleans up all intermediate files and generated assets (including exported SVGs).
+pub fn generate_page_pdf(
+  template_name: &str,
+  global_fields: &std::collections::HashMap<String, String>,
+  page: &PageConfig,
+  project_dir: &Path,
+  output_pdf_path: &Path,
+) -> Result<(), String> {
+  let template_dir = get_templates_src_dir().join(template_name);
+  if !template_dir.exists() {
+    return Err(format!("Template '{}' does not exist.", template_name));
+  }
+  
+  let temp_work_dir = std::env::temp_dir().join(format!("pcb-forge-build-{}", std::process::id()));
+  let _ = fs::remove_dir_all(&temp_work_dir);
+  fs::create_dir_all(&temp_work_dir)
+    .map_err(|e| format!("Failed to create OS temporary work directory: {}", e))?;
+  
+  let temp_work_dir = temp_work_dir.canonicalize().unwrap_or(temp_work_dir);
+  
+  // 1. Copy template assets into the temp workspace
+  let _created_assets = copy_template_assets(template_name, &temp_work_dir)?;
+  
+  // 2. Resolve source asset
+  let mut page_working_copy = page.clone();
+  if !page_working_copy.path.trim().is_empty() {
+    let preprocessed_path = resolve_project_path(&page_working_copy.path, project_dir);
+    let extra_args = page_working_copy.extra_args.as_deref().unwrap_or(&[]);
+    
+    // Pass `Some(&temp_work_dir)` so it copies/generates the asset straight into the temp directory
+    let resolved_asset_path = resolve_content_asset_with_dir(
+      &preprocessed_path,
+      extra_args,
+      Some(&temp_work_dir),
+    )?;
+    
+    // Keep it relative if it's inside temp_work_dir, or strip absolute prefix so Typst finds it locally
+    let relative_asset_path = if let Ok(stripped) = Path::new(&resolved_asset_path).strip_prefix(&temp_work_dir) {
+      stripped.to_path_buf()
+    } else {
+      Path::new(&resolved_asset_path).to_path_buf()
+    };
+    
+    page_working_copy.path = relative_asset_path.to_string_lossy().replace('\\', "/");
+  }
+  
+  // 3. Construct project config and build script
+  let single_project = ProjectConfig {
+    global_fields: global_fields.clone(),
+    pages: vec![page_working_copy],
+  };
+  
+  let typst_script = build_single_page_script(template_name, &single_project, &temp_work_dir)?;
+  
+  // 4. Compile PDF in memory with temp_work_dir as root
+  let pdf_bytes = compile_typst_script_with_root(typst_script, Some(&temp_work_dir))?;
+  
+  if let Some(parent) = output_pdf_path.parent() {
+    let _ = fs::create_dir_all(parent);
+  }
   
   fs::write(output_pdf_path, pdf_bytes)
-    .map_err(|e| format!("Failed to write PDF output file {}: {}", output_pdf_path.display(), e))?;
+    .map_err(|e| format!("Failed to write destination PDF {:?}: {}", output_pdf_path, e))?;
   
-  fs::remove_file(typ_path)
-    .map_err(|e| format!("Failed to remove Typst source file {}: {}", typ_path.display(), e))?;
+  let _ = fs::remove_dir_all(&temp_work_dir);
   
   Ok(())
 }
 
-pub fn generate_project_pdf(project_json_path: &Path) -> Result<PathBuf, String> {
-  let canonical_json_path = project_json_path
-    .canonicalize()
-    .map_err(|e| format!("Project JSON file not found at {:?}: {}", project_json_path, e))?;
+/// Builds the standalone Typst script for rendering a single page.
+fn build_single_page_script(
+  template_name: &str,
+  project: &ProjectConfig,
+  project_dir: &Path,
+) -> Result<String, String> {
+  let project_val = serde_json::to_value(project).unwrap_or(serde_json::Value::Object(Default::default()));
+  let project_typst = json_to_typst(&project_val);
   
-  let project_dir = canonical_json_path
-    .parent()
-    .ok_or_else(|| "Invalid project JSON parent directory".to_string())?;
+  let page = project.pages.first().ok_or("No page provided for rendering")?;
+  let schema_name = page.variant.as_deref().unwrap_or("default");
   
-  let project_stem = canonical_json_path
-    .file_stem()
-    .and_then(|s| s.to_str())
-    .unwrap_or("project");
+  let layout_file = find_page_layout_file(template_name, schema_name, project_dir)?;
+  let layout_code = fs::read_to_string(&layout_file)
+    .map_err(|e| format!("Failed to read layout file {:?}: {}", layout_file, e))?;
   
-  let build_dir = project_dir.join(".pcb-forge");
-  fs::create_dir_all(&build_dir)
-    .map_err(|e| format!("Failed to create .pcb-forge build folder {:?}: {}", build_dir, e))?;
+  Ok(format!(
+    r#"
+#import "@preview/cmarker:0.1.10"
+
+// --- INJECTED LAYOUT DEFINITION ---
+{}
+
+// --- INJECTED PROJECT DATA ---
+#let project = {}
+#let global_fields = project.global_fields
+#let p = project.pages.at(0)
+
+// --- EXECUTION ---
+#render_page(p.layout, p.local_fields, global_fields, p.content, p.path)
+"#,
+    layout_code, project_typst
+  ))
+}
+pub fn merge_pdfs(pdf_paths: &[PathBuf], output_path: &Path) -> Result<(), String> {
+  use lopdf::{Document, Object};
   
-  let json_str = fs::read_to_string(&canonical_json_path)
-    .map_err(|e| format!("Failed to read project JSON: {}", e))?;
-  
-  let raw_val: serde_json::Value = serde_json::from_str(&json_str)
-    .map_err(|e| format!("Invalid JSON structure: {}", e))?;
-  
-  let mut project: ProjectConfig = serde_json::from_value(raw_val.clone())
-    .map_err(|e| format!("Failed to deserialize ProjectConfig: {}", e))?;
-  
-  let layout_option = Some(project.layout.as_str());
-  let schema_option = raw_val.get("$schema").and_then(|v| v.as_str());
-  
-  let layout_file_path = find_layout_file(layout_option, schema_option, project_dir)?;
-  let layout_code = fs::read_to_string(&layout_file_path)
-    .map_err(|e| format!("Failed to read layout file {:?}: {}", layout_file_path, e))?;
-  
-  // 1. Preprocess paths and export content assets into .pcb-forge
-  for page in project.pages.iter_mut() {
-    let preprocessed_path = resolve_project_path(&page.path, project_dir);
-    let extra_args = page.extra_args.as_deref().unwrap_or(&[]);
-    let resolved_asset_path = resolve_content_asset_with_dir(
-      &page.content,
-      &preprocessed_path,
-      extra_args,
-      Some(&build_dir),
-    )?;
-    page.path = resolved_asset_path;
+  if pdf_paths.is_empty() {
+    return Err("No PDFs to merge".to_string());
   }
   
-  // 2. Generate sub-result PDFs for each page inside .pcb-forge
-  for (i, page) in project.pages.iter().enumerate() {
-    let single_page_project = ProjectConfig {
-      layout: project.layout.clone(),
-      global_fields: project.global_fields.clone(),
-      pages: vec![page.clone()],
-    };
-    
-    let single_script = build_typst_runner_script(&layout_code, &single_page_project);
-    let pdf_bytes = compile_typst_script(single_script)?;
-    
-    let page_pdf_path = build_dir.join(format!("page_{}.pdf", i + 1));
-    fs::write(&page_pdf_path, pdf_bytes)
-      .map_err(|e| format!("Failed to write page PDF {:?}: {}", page_pdf_path, e))?;
+  let mut documents = Vec::new();
+  for path in pdf_paths {
+    let doc = Document::load(path)
+      .map_err(|e| format!("Failed to load PDF {:?}: {}", path, e))?;
+    documents.push(doc);
   }
   
-  // 3. Compile full project PDF into project directory
-  let full_script = build_typst_runner_script(&layout_code, &project);
-  let full_pdf_bytes = compile_typst_script(full_script)?;
-  let output_pdf_path = project_dir.join(format!("{}.pdf", project_stem));
+  let mut merged_doc = documents.remove(0);
+  let mut max_id = merged_doc.max_id; // Field access, not method
   
-  fs::write(&output_pdf_path, full_pdf_bytes)
-    .map_err(|e| format!("Failed to write main PDF output {:?}: {}", output_pdf_path, e))?;
+  let pages_obj_id = merged_doc.trailer.get(b"Root")
+    .and_then(|r| merged_doc.get_object(r.as_reference()?))
+    .and_then(|o| o.as_dict())
+    .and_then(|d| d.get(b"Pages"))
+    .and_then(|o| o.as_reference())
+    .map_err(|e| format!("Failed to get root pages object: {:?}", e))?;
   
-  Ok(output_pdf_path)
+  for mut doc in documents {
+    doc.renumber_objects_with(max_id + 1);
+    max_id = doc.max_id; // Field access, not method
+    
+    let doc_pages_id = doc.trailer.get(b"Root")
+      .and_then(|r| doc.get_object(r.as_reference()?))
+      .and_then(|o| o.as_dict())
+      .and_then(|d| d.get(b"Pages"))
+      .and_then(|o| o.as_reference())
+      .map_err(|e| format!("Failed to get doc pages object: {:?}", e))?;
+    
+    let kids = doc.get_object(doc_pages_id)
+      .and_then(|o| o.as_dict())
+      .and_then(|d| d.get(b"Kids"))
+      .and_then(|o| o.as_array())
+      .cloned()
+      .map_err(|e| format!("Failed to get kids: {:?}", e))?;
+    
+    for kid in &kids {
+      if let Ok(kid_id) = kid.as_reference() {
+        if let Ok(obj) = doc.get_object_mut(kid_id) { // Corrected method name
+          if let Ok(dict) = obj.as_dict_mut() {
+            dict.set("Parent", Object::Reference(pages_obj_id));
+          }
+        }
+      }
+    }
+    
+    for (id, object) in doc.objects {
+      merged_doc.objects.insert(id, object);
+    }
+    
+    if let Ok(pages_obj) = merged_doc.get_object_mut(pages_obj_id) { // Corrected method name
+      if let Ok(dict) = pages_obj.as_dict_mut() {
+        if let Ok(existing_kids) = dict.get_mut(b"Kids").and_then(|o| o.as_array_mut()) {
+          existing_kids.extend(kids);
+        }
+      }
+    }
+  }
+  
+  let total_pages = merged_doc.get_object(pages_obj_id)
+    .and_then(|o| o.as_dict())
+    .and_then(|d| d.get(b"Kids"))
+    .and_then(|o| o.as_array())
+    .map(|arr| arr.len() as i32)
+    .unwrap_or(0);
+  
+  if let Ok(pages_obj) = merged_doc.get_object_mut(pages_obj_id) { // Corrected method name
+    if let Ok(dict) = pages_obj.as_dict_mut() {
+      dict.set("Count", Object::Integer(total_pages as i64));
+    }
+  }
+  
+  merged_doc.save(output_path)
+    .map_err(|e| format!("Failed to save merged PDF: {}", e))?;
+  
+  Ok(())
 }

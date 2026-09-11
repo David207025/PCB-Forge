@@ -18,9 +18,9 @@
     "tolerance": "",
     "version": "1.0"
   },
-  "layout": "/Users/davidvacaroiu/.pcb-forge/templates/src/test/layout.typ",
   "pages": [
     {
+      "variant": "default",
       "content": "sch",
       "layout": {
         "orientation": true,
@@ -35,6 +35,7 @@
       "path": "/Users/davidvacaroiu/Documents/_School_/Maturaprojekt/Venturi/Hardware/Venturi_MainPCB/Venturi_MainPCB.kicad_sch"
     },
     {
+      "variant": "default",
       "content": "pcb",
       "layout": {
         "orientation": true,
@@ -52,21 +53,19 @@
       "path": "/Users/davidvacaroiu/Documents/_School_/Maturaprojekt/Venturi/Hardware/Venturi_MainPCB/Venturi_MainPCB.kicad_pcb;F.Cu"
     },
     {
+      "variant": "bom",
       "content": "md",
       "layout": {
         "orientation": false,
         "size": "a4"
       },
-      "extra_args": [
-        "--black-and-white"
-      ],
       "local_fields": {
         "document_title": "Beilage",
         "document_type": "Layout Top",
         "page": "1",
         "pages": "1"
       },
-      "path": "./test.md"
+      "path": "/Users/davidvacaroiu/Documents/_Code_/_RustRover_/PCB-Forge/test/test.md"
     }
   ]
 }

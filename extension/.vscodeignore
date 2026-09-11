@@ -1,15 +1,18 @@
-# Exclude extension source and configs
+# ── Source & compiled extension output ───────────────────────────────────────
+# TypeScript source — compiled to out/ by tsc; not needed in the VSIX
 src/
 tsconfig.json
 
-# Exclude Web-UI source code, configs, and heavy node_modules (keep only dist/)
-web-ui/src/
-web-ui/node_modules/
-web-ui/tsconfig*.json
-web-ui/vite.config.ts
-web-ui/.gitignore
-web-ui/.oxlintrc.json
+# ── Web UI source tree ────────────────────────────────────────────────────────
+# The entire web-ui/ directory is excluded from the VSIX.
+# The compiled output is copied into extension/dist/ by build-webview.js, and
+# that dist/ directory IS included in the package (it is not listed here).
+web-ui/
 
-# General build/git ignores
+# ── Build tooling ─────────────────────────────────────────────────────────────
+# The build script itself only needs to run at packaging time, not at runtime
+build-webview.js
+
+# ── General ignores ───────────────────────────────────────────────────────────
 .git*
 .vscode*

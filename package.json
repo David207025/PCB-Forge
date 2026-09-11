@@ -19,6 +19,7 @@
     "deploy": "pnpm build && node deploy-extension.js",
     "build:webview": "pnpm --filter pcb-forge run build:webview",
     "compile:extension": "pnpm --filter pcb-forge run compile",
-    "package": "node package-extension.js"
+    "package": "node package-extension.js",
+    "docs": "node generate-docs.js"
   }
 }

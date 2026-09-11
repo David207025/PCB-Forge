@@ -1,16 +1,15 @@
-import {HashRouter, Routes, Route, useNavigate} from "react-router-dom";
-import HomePage from "./pages/HomePage.tsx";
-import SettingsPage from "./pages/SettingsPage.tsx";
-import {useEffect} from "react";
+import { HashRouter, Routes, Route, useNavigate } from "react-router-dom";
+import { useEffect } from "react";
+import HomePage from "./pages/HomePage";
+import DBPage from "./pages/DBPage";
 
-// Helper component to handle incoming window messages
 function ExtensionMessageListener() {
   const navigate = useNavigate();
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const message = event.data;
-      if (message.command === 'navigate') {
+      if (message.command === 'navigate' && message.path) {
         navigate(message.path);
       }
     };
@@ -27,11 +26,8 @@ export default function App() {
     <HashRouter>
       <ExtensionMessageListener />
       <Routes>
-        {/* The main Dockview workspace dashboard */}
         <Route path="/" index element={<HomePage />} />
-
-        {/* Optional: A separate dedicated route if opened via a distinct extension command */}
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/db" element={<DBPage />} />
       </Routes>
     </HashRouter>
   );
