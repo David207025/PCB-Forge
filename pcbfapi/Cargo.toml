@@ -35,9 +35,13 @@ pulldown-cmark = "0.13.4"
 pulldown-cmark-to-cmark = "22.0.1"
 lopdf = "0.44.0"
 qdrant-client = "1.19.0"
-fastembed = "6.0.3"
-ort = { version = "2.0.0-rc.9", features = ["download-binaries", "copy-dylibs"] }
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
+tokenizers = "0.21"
+hf-hub = "0.4"
 csv = "1.4.0"
+anyhow = "1.0.104"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
