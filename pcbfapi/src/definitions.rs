@@ -26,8 +26,6 @@ use include_dir::{include_dir, Dir};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
-use hf_hub::{api::sync::Api, Repo, RepoType};
-use hf_hub::api::sync::ApiBuilder;
 use tokenizers::Tokenizer;
 
 /// Typst packages embedded into the binary at compile time.
@@ -101,7 +99,7 @@ pub struct ProjectConfig {
   pub pages: Vec<PageConfig>,
 }
 
-// 2. Add the struct for the part payload
+// Struct for the part payload
 #[derive(Deserialize, Serialize, Debug)]
 pub struct ElectronicPart {
   pub name: String,
@@ -311,6 +309,19 @@ impl World for InMemoryWorld {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Embedding Model
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn download_if_missing(url: &str, dest_path: &Path) -> anyhow::Result<()> {
+  if !dest_path.exists() {
+    let response = reqwest::blocking::get(url)?.error_for_status()?;
+    let bytes = response.bytes()?;
+    std::fs::write(dest_path, bytes)?;
+  }
+  Ok(())
+}
+
 pub struct EmbeddingModel {
   model: BertModel,
   tokenizer: Tokenizer,
@@ -322,24 +333,25 @@ impl EmbeddingModel {
     let device = Device::Cpu;
     
     // Custom cache path: ~/.pcb-forge/cache/models
-    let cache_dir = crate::forge::get_cache_dir().join("models");
+    let cache_dir = dirs::home_dir()
+      .ok_or_else(|| anyhow::anyhow!("Could not determine user home directory"))?
+      .join(".pcb-forge")
+      .join("cache")
+      .join("models");
     std::fs::create_dir_all(&cache_dir)?;
     
-    let api = ApiBuilder::new()
-      .with_cache_dir(cache_dir)
-      .build()?;
+    let base_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/tree/main";
     
-    let repo = api.repo(Repo::new(
-      "BAAI/bge-small-en-v1.5".to_string(),
-      RepoType::Model,
-    ));
+    let config_filename = cache_dir.join("config.json");
+    let tokenizer_filename = cache_dir.join("tokenizer.json");
+    let weights_filename = cache_dir.join("model.safetensors");
     
-    let config_filename = repo.get("config.json")?;
-    let tokenizer_filename = repo.get("tokenizer.json")?;
-    let weights_filename = repo.get("model.safetensors")?;
+    download_if_missing(&format!("{}/config.json", base_url), &config_filename)?;
+    download_if_missing(&format!("{}/tokenizer.json", base_url), &tokenizer_filename)?;
+    download_if_missing(&format!("{}/model.safetensors", base_url), &weights_filename)?;
     
-    let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
-    let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(anyhow::Error::msg)?;
+    let config: Config = serde_json::from_str(&std::fs::read_to_string(&config_filename)?)?;
+    let tokenizer = Tokenizer::from_file(&tokenizer_filename).map_err(anyhow::Error::msg)?;
     
     let vb = unsafe {
       VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)?
