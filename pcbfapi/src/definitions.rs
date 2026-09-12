@@ -313,11 +313,14 @@ impl World for InMemoryWorld {
 // Embedding Model
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn download_if_missing(url: &str, dest_path: &Path) -> anyhow::Result<()> {
-  if !dest_path.exists() {
-    let response = reqwest::blocking::get(url)?.error_for_status()?;
-    let bytes = response.bytes()?;
-    std::fs::write(dest_path, bytes)?;
+async fn download_if_missing(url: &str, dest_path: &Path) -> anyhow::Result<()> {
+  if !tokio::fs::try_exists(dest_path).await.unwrap_or(false) {
+    let response = reqwest::get(url).await?.error_for_status()?;
+    let bytes = response.bytes().await?;
+    if let Some(parent) = dest_path.parent() {
+      tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(dest_path, bytes).await?;
   }
   Ok(())
 }
@@ -329,7 +332,7 @@ pub struct EmbeddingModel {
 }
 
 impl EmbeddingModel {
-  pub fn new() -> anyhow::Result<Self> {
+  pub async fn new() -> anyhow::Result<Self> {
     let device = Device::Cpu;
     
     // Custom cache path: ~/.pcb-forge/cache/models
@@ -338,19 +341,21 @@ impl EmbeddingModel {
       .join(".pcb-forge")
       .join("cache")
       .join("models");
-    std::fs::create_dir_all(&cache_dir)?;
+    tokio::fs::create_dir_all(&cache_dir).await?;
     
-    let base_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/tree/main";
+    // Fixed endpoint URL to download raw model assets from HuggingFace
+    let base_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main";
     
     let config_filename = cache_dir.join("config.json");
     let tokenizer_filename = cache_dir.join("tokenizer.json");
     let weights_filename = cache_dir.join("model.safetensors");
     
-    download_if_missing(&format!("{}/config.json", base_url), &config_filename)?;
-    download_if_missing(&format!("{}/tokenizer.json", base_url), &tokenizer_filename)?;
-    download_if_missing(&format!("{}/model.safetensors", base_url), &weights_filename)?;
+    download_if_missing(&format!("{}/config.json", base_url), &config_filename).await?;
+    download_if_missing(&format!("{}/tokenizer.json", base_url), &tokenizer_filename).await?;
+    download_if_missing(&format!("{}/model.safetensors", base_url), &weights_filename).await?;
     
-    let config: Config = serde_json::from_str(&std::fs::read_to_string(&config_filename)?)?;
+    let config_json = tokio::fs::read_to_string(&config_filename).await?;
+    let config: Config = serde_json::from_str(&config_json)?;
     let tokenizer = Tokenizer::from_file(&tokenizer_filename).map_err(anyhow::Error::msg)?;
     
     let vb = unsafe {

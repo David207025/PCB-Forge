@@ -201,7 +201,7 @@ async fn main() {
   
   println!("⚡ Loading embedding model...");
   let embedding_model = Arc::new(
-    EmbeddingModel::new().expect("Failed to load embedding model")
+    EmbeddingModel::new().await.expect("Failed to create embedding model"),
   );
   println!("✓ Embedding model ready");
   

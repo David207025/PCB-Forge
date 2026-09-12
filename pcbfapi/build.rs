@@ -31,7 +31,7 @@ fn main() {
     ("qdrant-x86_64-unknown-linux-gnu.tar.gz", "qdrant")
   };
   
-  let qdrant_version = "v1.8.4";
+  let qdrant_version = "v1.19.0";
   let url = format!("https://github.com/qdrant/qdrant/releases/download/{}/{}", qdrant_version, release_name);
   let archive_path = binaries_dir.join(release_name);
   let final_bin_path = binaries_dir.join("qdrant_bin");
