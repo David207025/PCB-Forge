@@ -293,11 +293,12 @@ async fn handle_init_template(
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
   let template_name = payload.name.trim_end_matches(".json").to_string();
   let template_dir = forge::get_templates_src_dir().join(&template_name);
+  let default_variant_dir = template_dir.join("default");
   
-  if fs::create_dir_all(&template_dir).is_err() {
+  if fs::create_dir_all(&default_variant_dir).is_err() {
     return ApiResponse::error(
       StatusCode::INTERNAL_SERVER_ERROR,
-      "Failed to create template folder",
+      "Failed to create template directory structure",
     );
   }
   
@@ -319,7 +320,7 @@ async fn handle_init_template(
     let _ = fs::write(&meta_path, json_str);
   }
   
-  let layout_typ_path = template_dir.join("layout.typ");
+  let layout_typ_path = default_variant_dir.join("layout.typ");
   let standard_layout_code = r#"
 #let render_page(layout, local_fields, global_fields, content, path) = {
   set page(
@@ -358,12 +359,11 @@ async fn handle_init_template(
       template_dir.to_string_lossy()
     ),
     Some(json!({
-            "template_name": template_name,
-            "path": template_dir.to_string_lossy()
-        })),
+      "template_name": template_name,
+      "path": template_dir.to_string_lossy()
+    })),
   )
 }
-
 async fn handle_init_project(
   Json(payload): Json<InitProjectPayload>,
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
