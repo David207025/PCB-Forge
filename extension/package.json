@@ -21,25 +21,41 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "pcb-forge-container",
+          "id": "pcbForgeActivityBar",
           "title": "PCB Forge",
-          "icon": "images/icon.png"
+          "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "pcb-forge-container": [
+      "pcbForgeActivityBar": [
         {
-          "id": "pcbForgeControlPanel",
-          "name": "Control Panel"
+          "type": "webview",
+          "id": "pcbForgeSidebarView",
+          "name": "PCB Forge"
         }
       ]
     },
     "commands": [
       {
         "command": "pcb-forge.openDashboard",
-        "title": "Open Web Dashboard",
-        "icon": "$(dashboard)"
+        "title": "PCB Forge: Open Dashboard"
+      },
+      {
+        "command": "pcb-forge.createTemplate",
+        "title": "PCB Forge: Create Template"
+      },
+      {
+        "command": "pcb-forge.createProject",
+        "title": "PCB Forge: Create Project"
+      },
+      {
+        "command": "pcb-forge.generateTemplates",
+        "title": "PCB Forge: Generate Templates"
+      },
+      {
+        "command": "pcb-forge.generateProject",
+        "title": "PCB Forge: Generate Project"
       }
     ],
     "menus": {

@@ -14,6 +14,32 @@ export function activate(context: vscode.ExtensionContext) {
   checkCliAvailability();
   startCliProcess();
 
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('pcbForgeSidebarView', {
+      resolveWebviewView(webviewView) {
+        vscode.commands.executeCommand('pcb-forge.openDashboard');
+        // Optional: populate sidebar with a brief launcher UI or command buttons
+        webviewView.webview.html = `
+          <!DOCTYPE html>
+          <html>
+            <body style="padding: 10px; font-family: sans-serif;">
+              <p>PCB Forge Dashboard opened in editor tab.</p>
+              <button onclick="tsvscode.postMessage({ command: 'open' })">Reopen Dashboard</button>
+              <script>
+                const tsvscode = acquireVsCodeApi();
+              </script>
+            </body>
+          </html>
+        `;
+        webviewView.webview.onDidReceiveMessage((msg) => {
+          if (msg.command === 'open') {
+            vscode.commands.executeCommand('pcb-forge.openDashboard');
+          }
+        });
+      }
+    })
+  );
+
   // Primary command: opens the root home screen inside the webview panel
   context.subscriptions.push(
     vscode.commands.registerCommand('pcb-forge.openDashboard', (routePath?: string) => {
