@@ -710,7 +710,7 @@ async fn handle_match_bom(
     Err(e) => {
       return ApiResponse::error(
         StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Failed to execute KiCad CLI binary ('{}'): {}", kicad_cli, e),
+        format!("Failed to execute KiCad CLI binary ('{}'): {}", kicad_cli.as_path().display(), e),
       );
     }
   };
