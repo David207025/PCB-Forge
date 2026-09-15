@@ -682,26 +682,55 @@ async fn handle_match_bom(
 ) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
   let pcb_path = std::path::Path::new(&payload.path);
   if !pcb_path.exists() {
-    return ApiResponse::error(StatusCode::BAD_REQUEST, "Specified PCB file does not exist");
+    return ApiResponse::error(
+      StatusCode::BAD_REQUEST,
+      format!("Specified PCB file does not exist: {}", payload.path),
+    );
   }
   
   let kicad_cli = match forge::get_kicad_cli_path() {
     Ok(p) => p,
-    Err(e) => return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    Err(e) => return ApiResponse::error(
+      StatusCode::INTERNAL_SERVER_ERROR,
+      format!("Failed to resolve KiCad CLI path: {}", e),
+    ),
   };
   
   let temp_bom_path = std::env::temp_dir().join(format!("bom_export_{}.csv", std::process::id()));
   
-  let output = std::process::Command::new(&kicad_cli)
+  let output = match std::process::Command::new(&kicad_cli)
     .args([
       "pcb", "export", "bom",
       "--output", temp_bom_path.to_str().unwrap(),
       pcb_path.to_str().unwrap(),
     ])
-    .output();
+    .output()
+  {
+    Ok(out) => out,
+    Err(e) => {
+      return ApiResponse::error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("Failed to execute KiCad CLI binary ('{}'): {}", kicad_cli, e),
+      );
+    }
+  };
   
-  if output.is_err() || !output.as_ref().unwrap().status.success() {
-    return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to export BOM from KiCad");
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let exit_code = output
+      .status
+      .code()
+      .map_or("terminated by signal".to_string(), |c| c.to_string());
+    
+    let error_msg = format!(
+      "KiCad CLI command failed with exit code {}\nStderr: {}\nStdout: {}",
+      exit_code,
+      if stderr.trim().is_empty() { "<empty>" } else { stderr.trim() },
+      if stdout.trim().is_empty() { "<empty>" } else { stdout.trim() }
+    );
+    
+    return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, error_msg);
   }
   
   let mut csv_reader = match ReaderBuilder::new().has_headers(true).from_path(&temp_bom_path) {
