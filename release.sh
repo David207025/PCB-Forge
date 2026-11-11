@@ -67,30 +67,29 @@ echo "📝 Checking git status..."
 if [ -n "$(git status --porcelain)" ]; then
   git add .
   git commit -m "chore(release): $TAG"
-  echo "⬆️ Pushing changes to origin..."
-  git push origin main
-else
-  echo "✅ Working tree is clean."
 fi
+
+echo "⬆️ Pushing changes to origin main..."
+git push origin main
 
 # Step 7: Delete pre-existing GitHub release and tag if any
 if command -v gh &> /dev/null; then
   echo "🔍 Checking for existing GitHub Release for $TAG..."
   if gh release view "$TAG" &> /dev/null; then
     echo "🗑️  Deleting existing GitHub Release $TAG..."
-    gh release delete "$TAG" --yes --cleanup-tag
+    gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
     echo "✅ Existing release deleted."
   fi
 fi
 
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   echo "🗑️  Deleting local tag $TAG..."
-  git tag -d "$TAG"
+  git tag -d "$TAG" 2>/dev/null || true
 fi
 
 if git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
   echo "🗑️  Deleting remote tag $TAG..."
-  git push origin ":refs/tags/$TAG"
+  git push origin ":refs/tags/$TAG" 2>/dev/null || true
 fi
 
 # Step 8: Create and push fresh tag
