@@ -55,7 +55,7 @@ git push origin main
 # fail trying to recreate a release that already exists for that tag.
 if gh release view "$TAG" &>/dev/null; then
   echo "🗑️  Deleting existing GitHub Release $TAG..."
-  gh release delete "$TAG" --yes
+  gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
 else
   echo "ℹ️  No existing GitHub Release for $TAG — nothing to delete."
 fi
