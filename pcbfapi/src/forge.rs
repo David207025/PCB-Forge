@@ -20,7 +20,6 @@ use crate::definitions::{InMemoryWorld, PageConfig, ProjectConfig, Template};
 use schemars::schema_for;
 use serde_json::json;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use pulldown_cmark::{CowStr, Event, Parser, Tag};
@@ -141,55 +140,23 @@ pub fn get_templates_generated_dir() -> PathBuf {
 
 /// Discovers the absolute path to the `kicad-cli` executable.
 pub fn get_kicad_cli_path() -> Result<PathBuf, String> {
-  if Command::new("kicad-cli").arg("--version").output().is_ok() {
-    return Ok(PathBuf::from("kicad-cli"));
+  if let Some(path) = crate::access::detect_kicad_cli() {
+    return Ok(path);
   }
-  
-  if cfg!(target_os = "windows") {
-    let base_dir = Path::new(r"C:\Program Files\KiCad");
-    if base_dir.is_dir() {
-      if let Ok(entries) = fs::read_dir(base_dir) {
-        let mut subdirs: Vec<PathBuf> = entries
-          .flatten()
-          .map(|e| e.path())
-          .filter(|p| p.is_dir())
-          .collect();
-        
-        subdirs.sort_by(|a, b| b.cmp(a));
-        
-        for dir in subdirs {
-          let cli_path = dir.join("bin").join("kicad-cli.exe");
-          if cli_path.exists() {
-            return Ok(cli_path);
-          }
-        }
-      }
+
+  // Attempt to prompt and ask for access / locate application
+  let report = crate::access::prompt_and_request_access();
+  if let Some(ref path_str) = report.kicad_cli_path {
+    let p = PathBuf::from(path_str);
+    if p.exists() {
+      return Ok(p);
     }
   }
-  
-  let static_paths: Vec<&str> = if cfg!(target_os = "macos") {
-    vec![
-      "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
-      "/Applications/KiCad.app/Contents/MacOS/kicad-cli",
-    ]
-  } else if cfg!(target_os = "windows") {
-    vec![r"C:\Program Files\KiCad\bin\kicad-cli.exe"]
-  } else {
-    vec![
-      "/usr/bin/kicad-cli",
-      "/usr/local/bin/kicad-cli",
-      "/app/bin/kicad-cli",
-    ]
-  };
-  
-  for path_str in static_paths {
-    let path = PathBuf::from(path_str);
-    if path.exists() {
-      return Ok(path);
-    }
-  }
-  
-  Err("kicad-cli executable could not be found in PATH or standard installation directories.".to_string())
+
+  Err(
+    "kicad-cli binary could not be found. Please install KiCad or use 'pcbfapi check-access' to grant permissions."
+      .to_string(),
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -486,26 +453,45 @@ pub fn resolve_content_asset_with_dir(
       Ok(make_relative_path(&canonical, &out_dir))
     }
     "kicad_pcb" => {
-      let layers = layers_option.unwrap_or("F.Cu,B.Cu");
+      let layers = layers_option.unwrap_or("Edge.Cuts");
       let layers_slug = layers.replace(['/', '\\', ' ', ':', ';', ','], "_");
       let cached_svg_name = format!("{}_{}_{}.svg", file_stem, modified_time, layers_slug);
       let cached_svg_path = out_dir.join(&cached_svg_name);
       
       if !cached_svg_path.exists() {
         let kicad_cli = get_kicad_cli_path()?;
-        let status = Command::new(&kicad_cli)
-          .args([
-            "pcb", "export", "svg", "--mode-single", "--exclude-drawing-sheet",
-            "--page-size-mode", "2", "--layers", layers,
-            "--output", cached_svg_path.to_str().unwrap(),
-            input_path.to_str().unwrap(),
-          ])
-          .args(extra_args)
-          .status()
-          .map_err(|e| e.to_string())?;
+        let mut cmd = Command::new(&kicad_cli);
+        cmd.args([
+          "pcb", "export", "svg", "--mode-single", "--exclude-drawing-sheet",
+          "--page-size-mode", "2", "--layers", layers,
+          "--output", cached_svg_path.to_str().unwrap(),
+          input_path.to_str().unwrap(),
+        ]);
+        cmd.args(extra_args);
+        crate::access::configure_kicad_command(&mut cmd);
+
+        let mut output = cmd.output().map_err(|e| e.to_string())?;
         
-        if !status.success() {
-          return Err(format!("kicad-cli PCB export failed for {}", file_path_str));
+        if !output.status.success() {
+          let stderr = String::from_utf8_lossy(&output.stderr);
+          if stderr.contains("Operation not permitted") || stderr.contains("Permission denied") {
+            // Prompt user for access and retry once
+            let _ = crate::access::prompt_and_request_access();
+            let mut retry_cmd = Command::new(&kicad_cli);
+            retry_cmd.args([
+              "pcb", "export", "svg", "--mode-single", "--exclude-drawing-sheet",
+              "--page-size-mode", "2", "--layers", layers,
+              "--output", cached_svg_path.to_str().unwrap(),
+              input_path.to_str().unwrap(),
+            ]);
+            retry_cmd.args(extra_args);
+            crate::access::configure_kicad_command(&mut retry_cmd);
+            output = retry_cmd.output().map_err(|e| e.to_string())?;
+          }
+        }
+
+        if !output.status.success() {
+          return Err(format!("kicad-cli PCB export failed: {}", String::from_utf8_lossy(&output.stderr)));
         }
         trim_svg_whitespace(&cached_svg_path)?;
       }
@@ -518,18 +504,36 @@ pub fn resolve_content_asset_with_dir(
       
       if !cached_svg_path.exists() {
         let kicad_cli = get_kicad_cli_path()?;
-        let output = Command::new(&kicad_cli)
-          .args([
-            "sch", "export", "svg", "--exclude-drawing-sheet", "--no-background-color",
-            "--pages", "1", "--output", out_dir.to_str().unwrap(),
-            input_path.to_str().unwrap(),
-          ])
-          .args(extra_args)
-          .output()
-          .map_err(|e| e.to_string())?;
+        let mut cmd = Command::new(&kicad_cli);
+        cmd.args([
+          "sch", "export", "svg", "--exclude-drawing-sheet", "--no-background-color",
+          "--pages", "1", "--output", out_dir.to_str().unwrap(),
+          input_path.to_str().unwrap(),
+        ]);
+        cmd.args(extra_args);
+        crate::access::configure_kicad_command(&mut cmd);
+
+        let mut output = cmd.output().map_err(|e| e.to_string())?;
         
         if !output.status.success() {
-          return Err("kicad-cli SCH export failed".to_string());
+          let stderr = String::from_utf8_lossy(&output.stderr);
+          if stderr.contains("Operation not permitted") || stderr.contains("Permission denied") {
+            // Prompt user for access and retry once
+            let _ = crate::access::prompt_and_request_access();
+            let mut retry_cmd = Command::new(&kicad_cli);
+            retry_cmd.args([
+              "sch", "export", "svg", "--exclude-drawing-sheet", "--no-background-color",
+              "--pages", "1", "--output", out_dir.to_str().unwrap(),
+              input_path.to_str().unwrap(),
+            ]);
+            retry_cmd.args(extra_args);
+            crate::access::configure_kicad_command(&mut retry_cmd);
+            output = retry_cmd.output().map_err(|e| e.to_string())?;
+          }
+        }
+
+        if !output.status.success() {
+          return Err(format!("kicad-cli SCH export failed: {}", String::from_utf8_lossy(&output.stderr)));
         }
         trim_svg_whitespace(&cached_svg_path)?;
       }
@@ -671,30 +675,12 @@ pub fn generate_template_schema() -> PathBuf {
   schema_path
 }
 
-pub fn get_qdrant_cache_dir() -> PathBuf {
-  let path = get_cache_dir().join("qdrant-cache");
-  if !path.exists() {
-    let _ = fs::create_dir_all(&path);
-  }
-  path
-}
-
-pub fn get_fastembed_cache_dir() -> PathBuf {
-  let path = get_cache_dir().join("fastembed");
-  if !path.exists() {
-    let _ = fs::create_dir_all(&path);
-  }
-  path
-}
-
 pub fn init_directories() {
   let _ = get_cache_dir();
   let _ = get_schemas_dir();
   let _ = get_templates_src_dir();
   let _ = get_templates_generated_dir();
   let _ = generate_template_schema();
-  let _ = get_qdrant_cache_dir();
-  let _ = get_fastembed_cache_dir();
 }
 
 pub fn generate_project_schema(meta: &Template, file_stem: &str) -> PathBuf {
@@ -810,47 +796,6 @@ pub fn build_typst_runner_script(layout_code: &str, project: &ProjectConfig) -> 
   format!(
     r#"
 #import "@preview/cmarker:0.1.10"
-
-// --- INJECTED CONTENT HANDLER ---
-#let input_content(content, path) = {{
-  if (content == "pcb" or content == "sch") {{
-    if path != "" {{
-      place(
-        top + left,
-        image(path, width: 100%, height: 100%, fit: "contain"),
-      )
-    }}
-  }} else if (content == "md") {{
-    if path != "" {{
-      place(top + left)[
-        #block(
-          width: 100%,
-          height: 100%,
-          inset: 12pt,
-          cmarker.render(read(path)),
-        )
-      ]
-    }}
-  }} else if (content == "bom") {{
-    if path != "" {{
-      let bom_data = csv(path)
-      let headers = bom_data.at(0)
-      let rows = bom_data.slice(1)
-      place(top + left)[
-        #block(
-          width: 100%,
-          height: 100%,
-          inset: 12pt,
-          table(
-            columns: headers.len(),
-            ..headers.map(h => [*#h*]),
-            ..rows.flatten(),
-          ),
-        )
-      ]
-    }}
-  }}
-}}
 
 // --- INJECTED PROJECT DATA ---
 #let project = {}
@@ -1133,7 +1078,7 @@ pub fn merge_pdfs(pdf_paths: &[PathBuf], output_path: &Path) -> Result<(), Strin
   
   for mut doc in documents {
     doc.renumber_objects_with(max_id + 1);
-    max_id = doc.max_id; // Field access, not method
+    max_id = doc.max_id;
     
     let doc_pages_id = doc.trailer.get(b"Root")
       .and_then(|r| doc.get_object(r.as_reference()?))
@@ -1151,7 +1096,7 @@ pub fn merge_pdfs(pdf_paths: &[PathBuf], output_path: &Path) -> Result<(), Strin
     
     for kid in &kids {
       if let Ok(kid_id) = kid.as_reference() {
-        if let Ok(obj) = doc.get_object_mut(kid_id) { // Corrected method name
+        if let Ok(obj) = doc.get_object_mut(kid_id) {
           if let Ok(dict) = obj.as_dict_mut() {
             dict.set("Parent", Object::Reference(pages_obj_id));
           }
@@ -1163,7 +1108,7 @@ pub fn merge_pdfs(pdf_paths: &[PathBuf], output_path: &Path) -> Result<(), Strin
       merged_doc.objects.insert(id, object);
     }
     
-    if let Ok(pages_obj) = merged_doc.get_object_mut(pages_obj_id) { // Corrected method name
+    if let Ok(pages_obj) = merged_doc.get_object_mut(pages_obj_id) {
       if let Ok(dict) = pages_obj.as_dict_mut() {
         if let Ok(existing_kids) = dict.get_mut(b"Kids").and_then(|o| o.as_array_mut()) {
           existing_kids.extend(kids);
@@ -1179,7 +1124,7 @@ pub fn merge_pdfs(pdf_paths: &[PathBuf], output_path: &Path) -> Result<(), Strin
     .map(|arr| arr.len() as i32)
     .unwrap_or(0);
   
-  if let Ok(pages_obj) = merged_doc.get_object_mut(pages_obj_id) { // Corrected method name
+  if let Ok(pages_obj) = merged_doc.get_object_mut(pages_obj_id) {
     if let Ok(dict) = pages_obj.as_dict_mut() {
       dict.set("Count", Object::Integer(total_pages as i64));
     }

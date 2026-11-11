@@ -2,23 +2,63 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { spawn, ChildProcess } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
+const execAsync = promisify(exec);
 const API_BASE = 'http://127.0.0.1:47210';
 
 let activeWebviewPanel: vscode.WebviewPanel | undefined = undefined;
-let cliProcess: ChildProcess | undefined = undefined;
-let isCliAvailable: boolean = true;
+let isCliAvailable: boolean = false;
+let statusBarItem: vscode.StatusBarItem | undefined = undefined;
+let healthCheckTimer: NodeJS.Timeout | undefined = undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-  checkCliAvailability();
-  startCliProcess();
+  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  context.subscriptions.push(statusBarItem);
+  statusBarItem.text = '$(circuit-board) PCB Forge: Checking...';
+  statusBarItem.show();
+
+  // Initial daemon health check
+  checkDaemonHealth(true).then((online) => {
+    if (online) {
+      // Check KiCad access report
+      fetch(`${API_BASE}/status`)
+        .then((r) => r.json())
+        .then((body: any) => {
+          if (body?.data && !body.data.has_access) {
+            vscode.window.showWarningMessage(
+              `PCB Forge: KiCad application access required (${body.data.message})`,
+              'Grant Access'
+            ).then((sel) => {
+              if (sel === 'Grant Access') {
+                checkKiCadAccess();
+              }
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  });
+
+  // Periodic health check every 30 seconds
+  healthCheckTimer = setInterval(() => {
+    checkDaemonHealth(false);
+  }, 30000);
+
+  // Register daemon management commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('pcb-forge.startDaemon', () => startDaemonService()),
+    vscode.commands.registerCommand('pcb-forge.stopDaemon', () => stopDaemonService()),
+    vscode.commands.registerCommand('pcb-forge.restartDaemon', () => restartDaemonService()),
+    vscode.commands.registerCommand('pcb-forge.checkAccess', () => checkKiCadAccess()),
+    vscode.commands.registerCommand('pcb-forge.installDaemon', () => installDaemonService())
+  );
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('pcbForgeSidebarView', {
       resolveWebviewView(webviewView) {
         vscode.commands.executeCommand('pcb-forge.openDashboard');
-        // Optional: populate sidebar with a brief launcher UI or command buttons
         webviewView.webview.html = `
           <!DOCTYPE html>
           <html>
@@ -187,28 +227,152 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-  if (cliProcess) {
-    cliProcess.kill();
-    cliProcess = undefined;
+  if (healthCheckTimer) {
+    clearInterval(healthCheckTimer);
+    healthCheckTimer = undefined;
   }
 }
 
-function checkCliAvailability() {
-  const checkCommand = process.platform === 'win32' ? 'where pcbfapi' : 'which pcbfapi';
-  const { exec } = require('child_process');
-  exec(checkCommand, (error: any) => {
-    isCliAvailable = !error;
+async function checkDaemonHealth(notifyIfDown: boolean = false): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(1500) });
+    if (res.ok) {
+      isCliAvailable = true;
+      updateStatusBar(true);
+      return true;
+    }
+  } catch {}
+
+  isCliAvailable = false;
+  updateStatusBar(false);
+
+  if (notifyIfDown) {
+    const action = await vscode.window.showWarningMessage(
+      'PCB Forge API background daemon is not running.',
+      'Start Service',
+      'Check KiCad Access',
+      'Install Service'
+    );
+    if (action === 'Start Service') {
+      await vscode.commands.executeCommand('pcb-forge.startDaemon');
+    } else if (action === 'Check KiCad Access') {
+      await vscode.commands.executeCommand('pcb-forge.checkAccess');
+    } else if (action === 'Install Service') {
+      await vscode.commands.executeCommand('pcb-forge.installDaemon');
+    }
+  }
+  return false;
+}
+
+function updateStatusBar(online: boolean) {
+  if (!statusBarItem) return;
+  if (online) {
+    statusBarItem.text = '$(circuit-board) PCB Forge: Online';
+    statusBarItem.tooltip = 'PCB Forge background daemon is active on 127.0.0.1:47210. Click to verify KiCad access.';
+    statusBarItem.command = 'pcb-forge.checkAccess';
+  } else {
+    statusBarItem.text = '$(warning) PCB Forge: Offline';
+    statusBarItem.tooltip = 'PCB Forge background daemon is stopped. Click to start service.';
+    statusBarItem.command = 'pcb-forge.startDaemon';
+  }
+  statusBarItem.show();
+}
+
+async function startDaemonService() {
+  await vscode.window.withProgress({
+    location: vscode.ProgressLocation.Notification,
+    title: 'Starting PCB Forge background service...',
+    cancellable: false
+  }, async () => {
+    try {
+      if (process.platform === 'darwin') {
+        try {
+          await execAsync('pcbfapi service start');
+        } catch {
+          await execAsync('brew services start pcbfapi');
+        }
+      } else if (process.platform === 'win32') {
+        await execAsync('pcbfapi service start');
+      } else {
+        await execAsync('pcbfapi service start || systemctl --user start pcbfapi.service');
+      }
+    } catch (err: any) {
+      console.warn('Service start command warning:', err);
+    }
+
+    // Poll for readiness
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 800));
+      const healthy = await checkDaemonHealth(false);
+      if (healthy) {
+        vscode.window.showInformationMessage('✓ PCB Forge background service started successfully.');
+        return;
+      }
+    }
+
+    vscode.window.showErrorMessage('Failed to connect to PCB Forge daemon. Run "pcbfapi service start" or "brew services start pcbfapi".');
   });
 }
 
-function startCliProcess() {
+async function stopDaemonService() {
   try {
-    cliProcess = spawn('pcbfapi', [], { detached: false, shell: true });
-    cliProcess.stdout?.on('data', (d) => console.log(`[CLI STDOUT]: ${d}`));
-    cliProcess.stderr?.on('data', (d) => console.error(`[CLI STDERR]: ${d}`));
-  } catch (e) {
-    console.error('Failed to launch pcbfapi:', e);
+    await execAsync('pcbfapi service stop || brew services stop pcbfapi');
+    await checkDaemonHealth(false);
+    vscode.window.showInformationMessage('PCB Forge background service stopped.');
+  } catch (err: any) {
+    vscode.window.showErrorMessage(`Failed to stop service: ${err.message}`);
   }
+}
+
+async function restartDaemonService() {
+  await stopDaemonService();
+  await new Promise((r) => setTimeout(r, 1000));
+  await startDaemonService();
+}
+
+async function installDaemonService() {
+  try {
+    const { stdout } = await execAsync('pcbfapi service install');
+    vscode.window.showInformationMessage(`PCB Forge Service Installed: ${stdout.trim()}`);
+    await checkDaemonHealth(false);
+  } catch (err: any) {
+    vscode.window.showErrorMessage(`Service installation failed: ${err.message}`);
+  }
+}
+
+async function checkKiCadAccess() {
+  await vscode.window.withProgress({
+    location: vscode.ProgressLocation.Notification,
+    title: 'Checking KiCad permissions and access...',
+    cancellable: false
+  }, async () => {
+    try {
+      const res = await fetch(`${API_BASE}/check-access`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: true }),
+        signal: AbortSignal.timeout(10000)
+      });
+      if (res.ok) {
+        const body = await res.json() as any;
+        const report = body.data;
+        if (report && report.has_access) {
+          vscode.window.showInformationMessage(`✓ KiCad Access OK: ${report.message}`);
+        } else {
+          vscode.window.showWarningMessage(`KiCad Access Warning: ${report?.message || 'Access issues detected'}`);
+        }
+        return;
+      }
+    } catch {}
+
+    // Fall back to CLI execution
+    try {
+      const { stdout } = await execAsync('pcbfapi check-access');
+      vscode.window.showInformationMessage(`KiCad Access:\n${stdout.trim()}`);
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`KiCad Access Check failed: ${err.message}`);
+    }
+  });
 }
 
 function ensureWebviewLoaded(context: vscode.ExtensionContext): vscode.WebviewPanel {

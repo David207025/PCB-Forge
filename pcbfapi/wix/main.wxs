@@ -128,6 +128,15 @@
                                 Source='$(var.CargoTargetBinDir)\pcbfapi.exe'
                                 KeyPath='yes'/>
                         </Component>
+                        <Component Id='AutoStart' Guid='E4B17B3A-64D9-4E65-831C-1A6DC56F8402'>
+                            <RegistryValue
+                                Root='HKCU'
+                                Key='Software\Microsoft\Windows\CurrentVersion\Run'
+                                Name='pcbfapi'
+                                Value='&quot;[Bin]pcbfapi.exe&quot; run'
+                                Type='string'
+                                KeyPath='yes'/>
+                        </Component>
                     </Directory>
                 </Directory>
             </Directory>
@@ -150,6 +159,7 @@
             <!--<ComponentRef Id='License'/>-->
 
             <ComponentRef Id='binary0'/>
+            <ComponentRef Id='AutoStart'/>
 
             <Feature
                 Id='Environment'

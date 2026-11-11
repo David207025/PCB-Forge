@@ -56,6 +56,26 @@
       {
         "command": "pcb-forge.generateProject",
         "title": "PCB Forge: Generate Project"
+      },
+      {
+        "command": "pcb-forge.startDaemon",
+        "title": "PCB Forge: Start Background Service"
+      },
+      {
+        "command": "pcb-forge.stopDaemon",
+        "title": "PCB Forge: Stop Background Service"
+      },
+      {
+        "command": "pcb-forge.restartDaemon",
+        "title": "PCB Forge: Restart Background Service"
+      },
+      {
+        "command": "pcb-forge.checkAccess",
+        "title": "PCB Forge: Check KiCad Access & Permissions"
+      },
+      {
+        "command": "pcb-forge.installDaemon",
+        "title": "PCB Forge: Register Background Service (Boot Autostart)"
       }
     ],
     "menus": {

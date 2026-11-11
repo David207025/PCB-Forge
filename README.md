@@ -12,14 +12,16 @@ The PCB Forge monorepo is structured into three primary components:
 PCB-Forge/
 ├── pcbfapi/                   # Native Rust background daemon & HTTP server
 │   ├── src/
-│   │   ├── main.rs            # Axum HTTP server (port 47210) & Tao system tray
+│   │   ├── main.rs            # Axum HTTP server (port 47210), CLI subcommands & system tray
+│   │   ├── access.rs          # KiCad detection, TCC permission checking & access requests
+│   │   ├── service.rs         # Background daemon manager (launchd, systemd, Windows service)
 │   │   ├── forge.rs           # KiCad CLI runner, asset caching & Typst compiler
 │   │   ├── definitions.rs     # Typst World implementation & project schema models
 │   │   └── tray.rs            # Native macOS / Windows system tray icon & menu
 │   └── typst/                 # Vendored Typst packages (e.g., cmarker plugin)
 │
 ├── extension/                 # VS Code extension (TypeScript)
-│   ├── src/extension.ts       # Extension entry point, command palette & webview provider
+│   ├── src/extension.ts       # Extension entry point, daemon connector & webview provider
 │   ├── web-ui/                # Modern React + Vite frontend for template & project editing
 │   └── package.json           # Extension manifest & configuration
 │
@@ -28,10 +30,36 @@ PCB-Forge/
 ```
 
 ### How It Works
-1. **The Extension (`extension/`)**: Launches when you open a PCB project in VS Code. It provides a visual UI (`extension/web-ui`) for editing templates, selecting page layouts, and configuring fields.
-2. **The API Daemon (`pcbfapi`)**: A lightweight background service written in Rust. It runs an Axum HTTP server listening on `127.0.0.1:47210` with a native OS system tray icon indicating compile status.
-3. **Asset Generation**: Whenever a project build is triggered, `pcbfapi` invokes `kicad-cli` to render vector SVG exports of schematic sheets and copper/silk layers.
-4. **Typst Compilation**: Hardware schematics, layer SVGs, markdown notes, and project metadata are stitched together using custom Typst templates and compiled in-memory to vector PDFs.
+1. **The API Daemon (`pcbfapi`)**: A secure, persistent background daemon process written in Rust. It runs independently of VS Code, auto-starts on boot (via macOS LaunchAgent, Linux systemd, or Windows startup), and exposes local loopback endpoints on `http://127.0.0.1:47210`.
+2. **KiCad Access & Permissions (`pcbfapi/src/access.rs`)**: Automatically checks for `kicad-cli`, resolves permissions, isolates configuration to prevent macOS TCC sandboxing issues, and prompts the user with native OS dialogs if access to KiCad application files is required.
+3. **The Extension (`extension/`)**: Seamlessly connects to the background daemon over the HTTP endpoint. Shows daemon connection status in the VS Code status bar and provides commands to manage the service and verify permissions.
+4. **Asset Generation & Typst Compilation**: Hardware schematics, layer SVGs, markdown notes, and project metadata are exported via KiCad CLI and compiled in-memory to publication-grade vector PDFs.
+
+---
+
+## ⚙️ Service & Daemon Management
+
+The `pcbfapi` binary can be installed and managed as a background service:
+
+```bash
+# Verify KiCad installation and prompt for access if permissions are missing:
+pcbfapi check-access
+
+# Service management (auto-starts from boot):
+pcbfapi service install    # Register background daemon (macOS LaunchAgent / systemd)
+pcbfapi service start      # Start daemon service
+pcbfapi service stop       # Stop daemon service
+pcbfapi service status     # Inspect daemon & service status
+pcbfapi service uninstall  # Remove background service registration
+```
+
+### Homebrew Installation & Services
+When installing via Homebrew, `pcbfapi` is automatically configured as a background service:
+```bash
+brew tap David207025/homebrew-pcb-forge
+brew install pcbfapi
+brew services start pcbfapi
+```
 
 ---
 

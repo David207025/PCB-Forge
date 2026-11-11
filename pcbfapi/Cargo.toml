@@ -34,15 +34,12 @@ include_dir = "0.7.4"
 pulldown-cmark = "0.13.4"
 pulldown-cmark-to-cmark = "22.0.1"
 lopdf = "0.44.0"
-qdrant-client = "1.19.0"
-candle-core = "0.8"
-candle-nn = "0.8"
-candle-transformers = "0.8"
-tokenizers = "0.21"
 reqwest = { version = "0.11", features = ["json"] }
 dirs = "5.0"
 csv = "1.4.0"
 anyhow = "1.0.104"
+which = "8.0.6"
+tower-http = { version = "0.5", features = ["cors"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

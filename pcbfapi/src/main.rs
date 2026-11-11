@@ -1,27 +1,22 @@
+mod access;
 mod definitions;
 mod forge;
+mod service;
 mod tray;
 
 use axum::{
-  extract::{Json, State},
+  extract::Json,
   http::StatusCode,
   routing::{get, post},
   Router,
 };
-use definitions::{ElectronicPart, EmbeddingModel, PageConfig, PageLayout, ProjectConfig, Template};
+use definitions::{PageConfig, PageLayout, ProjectConfig, Template};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
-use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::Arc;
+use tower_http::cors::{Any, CorsLayer};
 
-use csv::ReaderBuilder;
-use qdrant_client::{
-  qdrant::{PointStruct, SearchPoints, UpsertPointsBuilder},
-  Payload, Qdrant,
-};
-use qdrant_client::qdrant::ScrollPointsBuilder;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 
@@ -30,7 +25,6 @@ use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 
 use crate::tray::{reset_process_status, update_process_status};
 
-static QDRANT_BIN: &[u8] = include_bytes!("../binaries/qdrant_bin");
 
 #[derive(Serialize)]
 pub struct ApiResponse<T = serde_json::Value> {
@@ -103,16 +97,9 @@ struct GenProjectPayload {
   path: String,
 }
 
-#[derive(Deserialize)]
-struct MatchBomPayload {
-  path: String,
-  threshold: f32,
-}
-
-#[derive(Deserialize)]
-struct GenBomPayload {
-  path: String,
-  data: HashMap<String, serde_json::Value>,
+#[derive(Deserialize, Default)]
+struct CheckAccessPayload {
+  prompt: Option<bool>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -121,8 +108,8 @@ struct GenBomPayload {
 
 #[derive(Clone)]
 struct AppState {
+  #[allow(dead_code)]
   proxy: tao::event_loop::EventLoopProxy<UserEvent>,
-  model: Arc<EmbeddingModel>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -131,6 +118,120 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
+  let args: Vec<String> = std::env::args().collect();
+  if args.len() > 1 {
+    match args[1].as_str() {
+      "service" => {
+        let sub = args.get(2).map(|s| s.as_str()).unwrap_or("status");
+        match sub {
+          "install" => match service::install_service() {
+            Ok(msg) => {
+              println!("✓ {}", msg);
+              let report = access::prompt_and_request_access();
+              println!("ℹ️  KiCad access: {}", report.message);
+              return;
+            }
+            Err(e) => {
+              eprintln!("❌ Service install error: {}", e);
+              std::process::exit(1);
+            }
+          },
+          "uninstall" => match service::uninstall_service() {
+            Ok(msg) => {
+              println!("✓ {}", msg);
+              return;
+            }
+            Err(e) => {
+              eprintln!("❌ Service uninstall error: {}", e);
+              std::process::exit(1);
+            }
+          },
+          "start" => match service::start_service() {
+            Ok(msg) => {
+              println!("✓ {}", msg);
+              return;
+            }
+            Err(e) => {
+              eprintln!("❌ Service start error: {}", e);
+              std::process::exit(1);
+            }
+          },
+          "stop" => match service::stop_service() {
+            Ok(msg) => {
+              println!("✓ {}", msg);
+              return;
+            }
+            Err(e) => {
+              eprintln!("❌ Service stop error: {}", e);
+              std::process::exit(1);
+            }
+          },
+          "status" => {
+            println!("{}", service::status_service());
+            return;
+          }
+          other => {
+            eprintln!("Unknown service command: '{}'. Valid: install, uninstall, start, stop, status", other);
+            std::process::exit(1);
+          }
+        }
+      }
+      "check-access" => {
+        println!("🔍 Checking and requesting KiCad access permissions...");
+        let report = access::prompt_and_request_access();
+        println!("--------------------------------------------------");
+        println!("KiCad CLI Found:        {}", report.kicad_cli_found);
+        if let Some(ref p) = report.kicad_cli_path {
+          println!("KiCad CLI Path:         {}", p);
+        }
+        if let Some(ref v) = report.kicad_version {
+          println!("KiCad Version:          {}", v);
+        }
+        if let Some(ref b) = report.app_bundle_path {
+          println!("KiCad Application:      {}", b);
+        }
+        println!("Quarantine Removed:     {}", !report.has_quarantine);
+        println!("Config Home:            {}", report.config_home);
+        println!("Status Message:         {}", report.message);
+        println!("--------------------------------------------------");
+        if report.has_access {
+          println!("✅ KiCad access verified successfully.");
+        } else {
+          eprintln!("⚠️ KiCad access could not be fully verified.");
+          std::process::exit(1);
+        }
+        return;
+      }
+      "run" => {
+        // Continue to daemon execution below
+      }
+      "--help" | "-h" | "help" => {
+        println!("PCB Forge API (pcbfapi) - Background Daemon & API Service");
+        println!();
+        println!("Usage: pcbfapi [COMMAND]");
+        println!();
+        println!("Commands:");
+        println!("  run                Run daemon process in background (default)");
+        println!("  service install    Register pcbfapi as a persistent startup service");
+        println!("  service uninstall  Unregister the startup service");
+        println!("  service start      Start the background service");
+        println!("  service stop       Stop the background service");
+        println!("  service status     Show service and daemon status");
+        println!("  check-access       Verify and prompt for KiCad application access");
+        println!("  help               Display this help text");
+        return;
+      }
+      _ => {}
+    }
+  }
+
+  // Ensure persistent service is installed so pcbfapi runs from boot
+  service::ensure_service_installed();
+
+  // Verify KiCad permissions on startup
+  let kicad_status = access::check_kicad_access();
+  println!("ℹ️  KiCad status: {}", kicad_status.message);
+
   #[cfg(target_os = "macos")]
   {
     use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy};
@@ -144,67 +245,6 @@ async fn main() {
   
   forge::init_directories();
   
-  let qdrant_dir = forge::get_qdrant_cache_dir();
-  let qdrant_exec_path = qdrant_dir.join(if cfg!(windows) { "qdrant.exe" } else { "qdrant" });
-  
-  if !qdrant_exec_path.exists() {
-    fs::write(&qdrant_exec_path, QDRANT_BIN).expect("Failed to write Qdrant binary");
-    #[cfg(unix)]
-    {
-      use std::os::unix::fs::PermissionsExt;
-      let mut perms = fs::metadata(&qdrant_exec_path).unwrap().permissions();
-      perms.set_mode(0o755);
-      fs::set_permissions(&qdrant_exec_path, perms).unwrap();
-    }
-  }
-  
-  let storage_dir = qdrant_dir.join("storage");
-  std::thread::spawn(move || {
-    let _ = std::process::Command::new(&qdrant_exec_path)
-      .env("QDRANT__STORAGE__STORAGE_PATH", storage_dir.to_str().unwrap())
-      .spawn()
-      .expect("Failed to start Qdrant process");
-  });
-  
-  tokio::spawn(async {
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    
-    if let Ok(client) = Qdrant::from_url("http://127.0.0.1:6334").build() {
-      let collection_name = "parts";
-      
-      match client.collection_exists(collection_name).await {
-        Ok(false) => {
-          println!("Collection '{collection_name}' not found. Initializing...");
-          let create_res = client
-            .create_collection(
-              qdrant_client::qdrant::CreateCollectionBuilder::new(collection_name)
-                .vectors_config(
-                  qdrant_client::qdrant::VectorParamsBuilder::new(
-                    384,
-                    qdrant_client::qdrant::Distance::Cosine,
-                  ),
-                ),
-            )
-            .await;
-          
-          if let Err(e) = create_res {
-            eprintln!("Failed to create collection '{collection_name}': {e}");
-          } else {
-            println!("Collection '{collection_name}' initialized successfully.");
-          }
-        }
-        Ok(true) => (),
-        Err(e) => eprintln!("Error checking Qdrant collection status: {e}"),
-      }
-    }
-  });
-  
-  println!("⚡ Loading embedding model...");
-  let embedding_model = Arc::new(
-    EmbeddingModel::new().await.expect("Failed to create embedding model"),
-  );
-  println!("✓ Embedding model ready");
-  
   let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   
   #[cfg(target_os = "macos")]
@@ -217,11 +257,10 @@ async fn main() {
   tray::set_event_proxy(proxy.clone());
   let state = AppState {
     proxy: proxy.clone(),
-    model: embedding_model,
   };
   
   let tray_menu = Menu::new();
-  let status_label = MenuItem::new("Status: No process started", false, None);
+  let status_label = MenuItem::new("Status: Daemon running", false, None);
   let pause_resume_item = MenuItem::new("Pause / Resume", true, None);
   let cancel_item = MenuItem::new("Cancel", true, None);
   
@@ -247,24 +286,29 @@ async fn main() {
   }));
   
   tray::initialize_tray(tray_menu);
+
+  let cors = CorsLayer::new()
+    .allow_origin(Any)
+    .allow_methods(Any)
+    .allow_headers(Any);
   
   let app = Router::new()
+    .route("/health",           get(handle_health))
+    .route("/status",           get(handle_status))
+    .route("/check-access",     post(handle_check_access))
     .route("/init-template",    post(handle_init_template))
     .route("/init-project",     post(handle_init_project))
     .route("/gen-templates",    post(handle_gen_templates))
     .route("/preview-template", post(handle_preview_template))
     .route("/gen-project",      post(handle_gen_project))
-    .route("/match-bom",        post(handle_match_bom))
-    .route("/gen-bom",          post(handle_gen_bom))
-    .route("/add-part",         post(handle_add_part))
-    .route("/list-parts",       get(handle_list_parts))
+    .layer(cors)
     .with_state(state);
   
   let listener = tokio::net::TcpListener::bind("127.0.0.1:47210")
     .await
     .unwrap();
   
-  println!("🚀 PCB Forge API running locally on http://127.0.0.1:47210");
+  println!("🚀 PCB Forge API daemon running securely on http://127.0.0.1:47210");
   
   tokio::spawn(async move {
     axum::serve(listener, app).await.unwrap();
@@ -287,6 +331,34 @@ async fn main() {
 // ─────────────────────────────────────────────────────────────────────────────
 // API Handlers
 // ─────────────────────────────────────────────────────────────────────────────
+
+async fn handle_health() -> (StatusCode, Json<serde_json::Value>) {
+  (
+    StatusCode::OK,
+    Json(json!({
+      "status": "ok",
+      "service": "pcbfapi",
+      "version": env!("CARGO_PKG_VERSION")
+    })),
+  )
+}
+
+async fn handle_status() -> (StatusCode, Json<ApiResponse<access::KiCadAccessReport>>) {
+  let report = access::check_kicad_access();
+  ApiResponse::success("Status retrieved", Some(report))
+}
+
+async fn handle_check_access(
+  payload_opt: Option<Json<CheckAccessPayload>>,
+) -> (StatusCode, Json<ApiResponse<access::KiCadAccessReport>>) {
+  let should_prompt = payload_opt.and_then(|p| p.prompt).unwrap_or(true);
+  let report = if should_prompt {
+    access::prompt_and_request_access()
+  } else {
+    access::check_kicad_access()
+  };
+  ApiResponse::success("Access check complete", Some(report))
+}
 
 async fn handle_init_template(
   Json(payload): Json<InitTemplatePayload>,
@@ -674,231 +746,4 @@ async fn handle_gen_project(
     "Successfully generated project PDF",
     Some(json!({ "pdf": main_output_pdf.to_string_lossy() })),
   )
-}
-
-async fn handle_match_bom(
-  State(state): State<AppState>,
-  Json(payload): Json<MatchBomPayload>,
-) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-  let pcb_path = std::path::Path::new(&payload.path);
-  if !pcb_path.exists() {
-    return ApiResponse::error(
-      StatusCode::BAD_REQUEST,
-      format!("Specified PCB file does not exist: {}", payload.path),
-    );
-  }
-  
-  let kicad_cli = match forge::get_kicad_cli_path() {
-    Ok(p) => p,
-    Err(e) => return ApiResponse::error(
-      StatusCode::INTERNAL_SERVER_ERROR,
-      format!("Failed to resolve KiCad CLI path: {}", e),
-    ),
-  };
-  
-  let temp_bom_path = std::env::temp_dir().join(format!("bom_export_{}.csv", std::process::id()));
-  
-  let output = match std::process::Command::new(&kicad_cli)
-    .args([
-      "pcb", "export", "bom",
-      "--output", temp_bom_path.to_str().unwrap(),
-      pcb_path.to_str().unwrap(),
-    ])
-    .output()
-  {
-    Ok(out) => out,
-    Err(e) => {
-      return ApiResponse::error(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Failed to execute KiCad CLI binary ('{}'): {}", kicad_cli.as_path().display(), e),
-      );
-    }
-  };
-  
-  if !output.status.success() {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let exit_code = output
-      .status
-      .code()
-      .map_or("terminated by signal".to_string(), |c| c.to_string());
-    
-    let error_msg = format!(
-      "KiCad CLI command failed with exit code {}\nStderr: {}\nStdout: {}",
-      exit_code,
-      if stderr.trim().is_empty() { "<empty>" } else { stderr.trim() },
-      if stdout.trim().is_empty() { "<empty>" } else { stdout.trim() }
-    );
-    
-    return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, error_msg);
-  }
-  
-  let mut csv_reader = match ReaderBuilder::new().has_headers(true).from_path(&temp_bom_path) {
-    Ok(r) => r,
-    Err(e) => return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to read BOM CSV: {}", e)),
-  };
-  
-  let mut compiled_parts: Vec<String> = Vec::new();
-  for result in csv_reader.records() {
-    if let Ok(record) = result {
-      let ref_designator = record.get(0).unwrap_or("");
-      let value = record.get(1).unwrap_or("");
-      let footprint = record.get(2).unwrap_or("").split(':').last().unwrap_or("");
-      let desc = record.get(3).unwrap_or("");
-      
-      let compiled_str = format!("{} {} {} {}", ref_designator, value, footprint, desc).trim().to_string();
-      if !compiled_str.is_empty() && !compiled_parts.contains(&compiled_str) {
-        compiled_parts.push(compiled_str);
-      }
-    }
-  }
-  
-  let _ = std::fs::remove_file(temp_bom_path);
-  
-  // Generate embeddings using shared model from AppState
-  let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(compiled_parts.len());
-  for part in &compiled_parts {
-    match state.model.embed(part) {
-      Ok(emb) => embeddings.push(emb),
-      Err(e) => return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding failed: {}", e)),
-    }
-  }
-  
-  let client = match Qdrant::from_url("http://localhost:6334").build() {
-    Ok(c) => c,
-    Err(e) => return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, format!("Qdrant connection failed: {}", e)),
-  };
-  
-  let mut results_map: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
-  
-  for (idx, compiled_str) in compiled_parts.iter().enumerate() {
-    let vector = embeddings[idx].clone();
-    
-    let search_request = SearchPoints {
-      collection_name: "parts".to_string(),
-      vector,
-      limit: 10,
-      score_threshold: Some(payload.threshold),
-      with_payload: Some(true.into()),
-      ..Default::default()
-    };
-    
-    if let Ok(response) = client.search_points(search_request).await {
-      let matches = response.result.into_iter().map(|point| {
-        json!({
-          "score": point.score,
-          "payload": point.payload
-        })
-      }).collect();
-      
-      results_map.insert(compiled_str.clone(), matches);
-    } else {
-      results_map.insert(compiled_str.clone(), vec![]);
-    }
-  }
-  
-  ApiResponse::success("Successfully matched BOM parts", Some(json!(results_map)))
-}
-
-async fn handle_gen_bom(
-  Json(payload): Json<GenBomPayload>,
-) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-  let target_path = std::path::Path::new(&payload.path);
-  
-  if let Some(parent) = target_path.parent() {
-    let _ = std::fs::create_dir_all(parent);
-  }
-  
-  let mut wtr = match csv::Writer::from_path(target_path) {
-    Ok(w) => w,
-    Err(e) => return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create CSV: {}", e)),
-  };
-  
-  if wtr.write_record(&["Name", "Reference", "Value", "Description", "Link"]).is_err() {
-    return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to write header to CSV");
-  }
-  
-  for (_compiled_key, part_info) in payload.data {
-    let name = part_info.get("Name").and_then(|v| v.as_str()).unwrap_or("");
-    let reference = part_info.get("Reference").and_then(|v| v.as_str()).unwrap_or("");
-    let value = part_info.get("Value").and_then(|v| v.as_str()).unwrap_or("");
-    let desc = part_info.get("Description").and_then(|v| v.as_str()).unwrap_or("");
-    let link = part_info.get("Link").and_then(|v| v.as_str()).unwrap_or("");
-    
-    if wtr.write_record(&[name, reference, value, desc, link]).is_err() {
-      return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to write record to CSV");
-    }
-  }
-  
-  if wtr.flush().is_err() {
-    return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to flush CSV file");
-  }
-  
-  ApiResponse::success(
-    format!("Successfully generated BOM at {}", target_path.display()),
-    Some(json!({ "path": target_path.to_string_lossy() })),
-  )
-}
-
-async fn handle_add_part(
-  State(state): State<AppState>,
-  Json(payload): Json<ElectronicPart>,
-) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-  let compiled_str = format!("{} {} {} {}", payload.reference, payload.value, payload.name, payload.description)
-    .trim().to_string();
-  
-  // Embed using shared model from AppState
-  let vector = match state.model.embed(&compiled_str) {
-    Ok(emb) => emb,
-    Err(e) => return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding failed: {}", e)),
-  };
-  
-  let client = match Qdrant::from_url("http://localhost:6334").build() {
-    Ok(c) => c,
-    Err(e) => return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, format!("Qdrant connection failed: {}", e)),
-  };
-  
-  let payload_json = json!({
-    "Name": payload.name,
-    "Reference": payload.reference,
-    "Value": payload.value,
-    "Description": payload.description,
-    "Link": payload.link.unwrap_or_default()
-  });
-  
-  let qdrant_payload: Payload = payload_json.try_into().unwrap();
-  
-  let mut hasher = DefaultHasher::new();
-  compiled_str.hash(&mut hasher);
-  let id = hasher.finish();
-  
-  let point = PointStruct::new(
-    id,
-    vector,
-    qdrant_payload,
-  );
-  
-  match client.upsert_points(UpsertPointsBuilder::new("parts", vec![point])).await {
-    Ok(_) => ApiResponse::success("Added part to Qdrant", None),
-    Err(e) => ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, format!("Upsert failed: {}", e)),
-  }
-}
-
-async fn handle_list_parts() -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
-  let client = match Qdrant::from_url("http://localhost:6334").build() {
-    Ok(c) => c,
-    Err(e) => return ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, format!("Qdrant connection failed: {}", e)),
-  };
-  
-  let scroll_request = ScrollPointsBuilder::new("parts")
-    .limit(500)
-    .with_payload(true);
-  
-  match client.scroll(scroll_request).await {
-    Ok(response) => {
-      let parts: Vec<_> = response.result.into_iter().map(|p| p.payload).collect();
-      ApiResponse::success("Retrieved parts", Some(json!(parts)))
-    },
-    Err(e) => ApiResponse::error(StatusCode::INTERNAL_SERVER_ERROR, format!("Scroll failed: {}", e)),
-  }
 }

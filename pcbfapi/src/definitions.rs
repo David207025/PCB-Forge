@@ -23,11 +23,6 @@ use typst::{Library, LibraryExt, World};
 use chrono::{Datelike, Duration as ChronoDuration, Local};
 use include_dir::{include_dir, Dir};
 
-use candle_core::{DType, Device, Tensor};
-use candle_nn::VarBuilder;
-use candle_transformers::models::bert::{BertModel, Config, DTYPE};
-use tokenizers::Tokenizer;
-
 /// Typst packages embedded into the binary at compile time.
 ///
 /// The directory at `pcbfapi/typst/packages/` is recursively compiled in so
@@ -38,15 +33,10 @@ static EMBEDDED_PACKAGES: Dir = include_dir!("$CARGO_MANIFEST_DIR/typst/packages
 // Configuration structs (serialized to / deserialized from JSON)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A template definition stored in `~/.pcb-forge/templates/src/<name>/meta.json`.
-///
-/// `global_fields` are shared across all pages of a project (e.g. author name,
-/// project title). `local_fields` are per-page overrides (e.g. document type,
-/// sheet number).
+/// Template metadata definition
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
 pub struct Template {
   /// Optional `$schema` URI pointing to `template.schema.json`.
-  /// Serialized as `"$schema"` in JSON.
   #[serde(rename = "$schema", default)]
   pub schema: Option<String>,
   /// Key → human-readable description pairs for project-wide fields.
@@ -97,16 +87,6 @@ pub struct ProjectConfig {
   pub global_fields: HashMap<String, String>,
   /// Ordered list of pages to render.
   pub pages: Vec<PageConfig>,
-}
-
-// Struct for the part payload
-#[derive(Deserialize, Serialize, Debug)]
-pub struct ElectronicPart {
-  pub name: String,
-  pub reference: String,
-  pub value: String,
-  pub description: String,
-  pub link: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -306,83 +286,5 @@ impl World for InMemoryWorld {
       adjusted.month() as u8,
       adjusted.day() as u8,
     )
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Embedding Model
-// ─────────────────────────────────────────────────────────────────────────────
-
-async fn download_if_missing(url: &str, dest_path: &Path) -> anyhow::Result<()> {
-  if !tokio::fs::try_exists(dest_path).await.unwrap_or(false) {
-    let response = reqwest::get(url).await?.error_for_status()?;
-    let bytes = response.bytes().await?;
-    if let Some(parent) = dest_path.parent() {
-      tokio::fs::create_dir_all(parent).await?;
-    }
-    tokio::fs::write(dest_path, bytes).await?;
-  }
-  Ok(())
-}
-
-pub struct EmbeddingModel {
-  model: BertModel,
-  tokenizer: Tokenizer,
-  device: Device,
-}
-
-impl EmbeddingModel {
-  pub async fn new() -> anyhow::Result<Self> {
-    let device = Device::Cpu;
-    
-    // Custom cache path: ~/.pcb-forge/cache/models
-    let cache_dir = dirs::home_dir()
-      .ok_or_else(|| anyhow::anyhow!("Could not determine user home directory"))?
-      .join(".pcb-forge")
-      .join("cache")
-      .join("models");
-    tokio::fs::create_dir_all(&cache_dir).await?;
-    
-    // Fixed endpoint URL to download raw model assets from HuggingFace
-    let base_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main";
-    
-    let config_filename = cache_dir.join("config.json");
-    let tokenizer_filename = cache_dir.join("tokenizer.json");
-    let weights_filename = cache_dir.join("model.safetensors");
-    
-    download_if_missing(&format!("{}/config.json", base_url), &config_filename).await?;
-    download_if_missing(&format!("{}/tokenizer.json", base_url), &tokenizer_filename).await?;
-    download_if_missing(&format!("{}/model.safetensors", base_url), &weights_filename).await?;
-    
-    let config_json = tokio::fs::read_to_string(&config_filename).await?;
-    let config: Config = serde_json::from_str(&config_json)?;
-    let tokenizer = Tokenizer::from_file(&tokenizer_filename).map_err(anyhow::Error::msg)?;
-    
-    let vb = unsafe {
-      VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)?
-    };
-    let model = BertModel::load(vb, &config)?;
-    
-    Ok(Self {
-      model,
-      tokenizer,
-      device,
-    })
-  }
-  
-  pub fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-    let tokens = self.tokenizer.encode(text, true).map_err(anyhow::Error::msg)?;
-    let token_ids = Tensor::new(tokens.get_ids(), &self.device)?.unsqueeze(0)?;
-    let token_type_ids = token_ids.zeros_like()?;
-    
-    let embeddings = self.model.forward(&token_ids, &token_type_ids, None)?;
-    
-    let (_n_sentence, n_tokens, _hidden_size) = embeddings.dims3()?;
-    let mean_embeddings = (embeddings.sum(1)? / (n_tokens as f64))?;
-    
-    let norm = mean_embeddings.sqr()?.sum_keepdim(1)?.sqrt()?;
-    let normalized = (mean_embeddings / norm)?;
-    
-    Ok(normalized.squeeze(0)?.to_vec1::<f32>()?)
   }
 }

@@ -135,11 +135,7 @@ This module contains:
 
 #### `pub struct Template`
 
-A template definition stored in `~/.pcb-forge/templates/src/<name>/meta.json`.
-
-`global_fields` are shared across all pages of a project (e.g. author name,
-project title). `local_fields` are per-page overrides (e.g. document type,
-sheet number).
+Template metadata definition
 
 ---
 
