@@ -23,6 +23,6 @@ publish-jobs = ["homebrew"]
 
 token = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
 
-[dist.runners]
+[dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"
 x86_64-apple-darwin = "macos-15"
