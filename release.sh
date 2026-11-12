@@ -89,6 +89,9 @@ echo "🛠️  Building release binaries locally (macOS) and in Docker (Windows)
 rm -rf target/distrib
 mkdir -p target/distrib
 
+TMP_MANIFEST_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_MANIFEST_DIR"' EXIT
+
 # Ensure Intel macOS rustup target is installed
 rustup target add x86_64-apple-darwin >/dev/null
 
@@ -99,12 +102,14 @@ if ! docker image inspect "$WIN_BUILDER_IMAGE" >/dev/null 2>&1; then
 fi
 
 echo "🍎 Building aarch64-apple-darwin..."
-dist build --tag="$TAG" --output-format=json --artifacts=local --target=aarch64-apple-darwin \
-  > target/distrib/aarch64-apple-darwin-dist-manifest.json
+RUST_BACKTRACE=1 dist build --tag="$TAG" --output-format=json --artifacts=local --target=aarch64-apple-darwin \
+  > "$TMP_MANIFEST_DIR/aarch64-apple-darwin-dist-manifest.json"
+mv "$TMP_MANIFEST_DIR/aarch64-apple-darwin-dist-manifest.json" target/distrib/
 
 echo "🍎 Building x86_64-apple-darwin..."
-dist build --tag="$TAG" --output-format=json --artifacts=local --target=x86_64-apple-darwin \
-  > target/distrib/x86_64-apple-darwin-dist-manifest.json
+RUST_BACKTRACE=1 dist build --tag="$TAG" --output-format=json --artifacts=local --target=x86_64-apple-darwin \
+  > "$TMP_MANIFEST_DIR/x86_64-apple-darwin-dist-manifest.json"
+mv "$TMP_MANIFEST_DIR/x86_64-apple-darwin-dist-manifest.json" target/distrib/
 
 echo "🪟 Building x86_64-pc-windows-msvc in Docker..."
 docker run --rm \
@@ -112,7 +117,8 @@ docker run --rm \
   -v pcbfapi-win-target:/target-win \
   -e CARGO_TARGET_DIR=/target-win \
   "$WIN_BUILDER_IMAGE" \
-  bash -c "set -euo pipefail; dist build --tag='$TAG' --output-format=json --artifacts=local --target=x86_64-pc-windows-msvc > /work/target/distrib/x86_64-pc-windows-msvc-dist-manifest.json && cp /target-win/distrib/* /work/target/distrib/"
+  bash -c "set -euo pipefail; dist build --tag='$TAG' --output-format=json --artifacts=local --target=x86_64-pc-windows-msvc > /tmp/x86_64-pc-windows-msvc-dist-manifest.json && cp /target-win/distrib/* /work/target/distrib/ && mv /tmp/x86_64-pc-windows-msvc-dist-manifest.json /work/target/distrib/"
+
 # Step 8: Clean up old release/tags, stage prebuilt artifacts in a draft release, and push tag
 echo "🔍 Checking for existing GitHub Release for $TAG..."
 if gh release view "$TAG" &> /dev/null; then
