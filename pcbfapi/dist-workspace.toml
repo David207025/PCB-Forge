@@ -1,5 +1,5 @@
 [workspace.metadata.dist]
-cargo-dist-version = "0.32.0"
+cargo-dist-version = "0.33.0"
 ci = ["github"]
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"]
 installers = ["shell", "powershell", "homebrew", "msi"]
