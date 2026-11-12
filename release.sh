@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# release.sh — Unified release automation script for PCB Forge
+# release.sh — Hybrid local/Docker release automation script for PCB Forge
 # ==============================================================================
 #
 # Automates the complete end-to-end release process:
@@ -10,20 +10,32 @@
 #   4. Packages the VSIX extension bundle (package-extension.js)
 #   5. Publishes VSIX to VS Code Marketplace (if VSCE_PAT is available)
 #   6. Commits and pushes changes to main branch
-#   7. Deletes any pre-existing release/tag for this version on GitHub
-#   8. Creates a fresh git tag and pushes it to trigger cargo-dist CI
+#   7. Compiles macOS binaries natively and Windows binary via Docker
+#   8. Uploads prebuilt artifacts to a draft GitHub release and pushes the tag
+#      to trigger lightweight Linux CI (global installers + Homebrew tap)
 #
 # Usage:
 #   ./release.sh           # Uses current version in pcbfapi/Cargo.toml
 #   ./release.sh 0.4.0     # Bumps to 0.4.0 first, then runs release
 # ==============================================================================
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-NEW_VERSION="$1"
+NEW_VERSION="${1:-}"
+VSCE_PAT="${VSCE_PAT:-}"
+WIN_BUILDER_IMAGE="pcbfapi-win-builder"
+
+# Preflight checks
+for cmd in gh docker dist rustup; do
+  if ! command -v "$cmd" &> /dev/null; then
+    echo "❌ Required tool '$cmd' is not installed or not in PATH."
+    exit 1
+  fi
+done
+gh auth status >/dev/null
 
 # Step 1: Version update if argument provided
 if [ -n "$NEW_VERSION" ]; then
@@ -72,14 +84,42 @@ fi
 echo "⬆️ Pushing changes to origin main..."
 git push origin main
 
-# Step 7: Delete pre-existing GitHub release and tag if any
-if command -v gh &> /dev/null; then
-  echo "🔍 Checking for existing GitHub Release for $TAG..."
-  if gh release view "$TAG" &> /dev/null; then
-    echo "🗑️  Deleting existing GitHub Release $TAG..."
-    gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-    echo "✅ Existing release deleted."
-  fi
+# Step 7: Compile macOS natively & Windows in Docker
+echo "🛠️  Building release binaries locally (macOS) and in Docker (Windows)..."
+rm -rf target/distrib
+mkdir -p target/distrib
+
+# Ensure Intel macOS rustup target is installed
+rustup target add x86_64-apple-darwin >/dev/null
+
+# Build Docker cross-compiler image once if not cached locally
+if ! docker image inspect "$WIN_BUILDER_IMAGE" >/dev/null 2>&1; then
+  echo "🐳 Building $WIN_BUILDER_IMAGE Docker image..."
+  docker build -f Dockerfile.win -t "$WIN_BUILDER_IMAGE" .
+fi
+
+echo "🍎 Building aarch64-apple-darwin..."
+dist build --tag="$TAG" --print=linkage --output-format=json --artifacts=local --target=aarch64-apple-darwin \
+  > target/distrib/aarch64-apple-darwin-dist-manifest.json
+
+echo "🍎 Building x86_64-apple-darwin..."
+dist build --tag="$TAG" --print=linkage --output-format=json --artifacts=local --target=x86_64-apple-darwin \
+  > target/distrib/x86_64-apple-darwin-dist-manifest.json
+
+echo "🪟 Building x86_64-pc-windows-msvc in Docker..."
+docker run --rm \
+  -v "$SCRIPT_DIR:/work" \
+  -v pcbfapi-win-target:/target-win \
+  -e CARGO_TARGET_DIR=/target-win \
+  "$WIN_BUILDER_IMAGE" \
+  bash -c "dist build --tag='$TAG' --print=linkage --output-format=json --artifacts=local --target=x86_64-pc-windows-msvc > /work/target/distrib/x86_64-pc-windows-msvc-dist-manifest.json && cp /target-win/distrib/*.zip /work/target/distrib/"
+
+# Step 8: Clean up old release/tags, stage prebuilt artifacts in a draft release, and push tag
+echo "🔍 Checking for existing GitHub Release for $TAG..."
+if gh release view "$TAG" &> /dev/null; then
+  echo "🗑️  Deleting existing GitHub Release $TAG..."
+  gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+  echo "✅ Existing release deleted."
 fi
 
 if git rev-parse "$TAG" >/dev/null 2>&1; then
@@ -92,12 +132,18 @@ if git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
   git push origin ":refs/tags/$TAG" 2>/dev/null || true
 fi
 
-# Step 8: Create and push fresh tag
+echo "📤 Uploading prebuilt artifacts to draft release $TAG..."
+gh release create "$TAG" \
+  --draft \
+  --title "Release $TAG (Staging)" \
+  --notes "Staging prebuilt local artifacts for CI packaging." \
+  target/distrib/*
+
 echo "🏷️  Creating fresh tag $TAG..."
 git tag -a "$TAG" -m "Release $TAG"
-echo "⬆️ Pushing tag $TAG to origin (triggers CI cargo-dist workflow)..."
+echo "⬆️ Pushing tag $TAG to origin (triggers CI packaging & Homebrew tap update)..."
 git push origin "$TAG"
 
 echo ""
-echo "🎉 Release process complete for $TAG!"
-echo "   GitHub Actions will now build binaries, installers, and update the Homebrew tap."
+echo "🎉 Local builds uploaded and tag $TAG pushed!"
+echo "   GitHub Actions (ubuntu-22.04) will now generate installers, publish the release, and update Homebrew."
