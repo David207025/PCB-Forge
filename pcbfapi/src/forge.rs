@@ -504,37 +504,83 @@ pub fn resolve_content_asset_with_dir(
       
       if !cached_svg_path.exists() {
         let kicad_cli = get_kicad_cli_path()?;
-        let mut cmd = Command::new(&kicad_cli);
-        cmd.args([
-          "sch", "export", "svg", "--exclude-drawing-sheet", "--no-background-color",
-          "--pages", "1", "--output", out_dir.to_str().unwrap(),
-          input_path.to_str().unwrap(),
-        ]);
-        cmd.args(extra_args);
-        crate::access::configure_kicad_command(&mut cmd);
-
-        let mut output = cmd.output().map_err(|e| e.to_string())?;
+        let temp_sch_dir = out_dir.join(format!("sch_tmp_{}_{}", file_stem, modified_time));
+        let _ = fs::remove_dir_all(&temp_sch_dir);
+        fs::create_dir_all(&temp_sch_dir)
+          .map_err(|e| format!("Failed to create temporary schematic export dir: {}", e))?;
         
-        if !output.status.success() {
-          let stderr = String::from_utf8_lossy(&output.stderr);
-          if stderr.contains("Operation not permitted") || stderr.contains("Permission denied") {
-            // Prompt user for access and retry once
-            let _ = crate::access::prompt_and_request_access();
-            let mut retry_cmd = Command::new(&kicad_cli);
-            retry_cmd.args([
-              "sch", "export", "svg", "--exclude-drawing-sheet", "--no-background-color",
-              "--pages", "1", "--output", out_dir.to_str().unwrap(),
-              input_path.to_str().unwrap(),
-            ]);
-            retry_cmd.args(extra_args);
-            crate::access::configure_kicad_command(&mut retry_cmd);
-            output = retry_cmd.output().map_err(|e| e.to_string())?;
+        let run_sch_export = |prompt_on_err: bool| -> Result<(), String> {
+          let mut cmd = Command::new(&kicad_cli);
+          cmd.args([
+            "sch", "export", "svg", "--exclude-drawing-sheet", "--no-background-color",
+            "--pages", "1", "--output", temp_sch_dir.to_str().unwrap(),
+            input_path.to_str().unwrap(),
+          ]);
+          cmd.args(extra_args);
+          crate::access::configure_kicad_command(&mut cmd);
+          
+          let mut output = cmd.output().map_err(|e| e.to_string())?;
+          if !output.status.success() && prompt_on_err {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("Operation not permitted") || stderr.contains("Permission denied") {
+              let _ = crate::access::prompt_and_request_access();
+              let mut retry_cmd = Command::new(&kicad_cli);
+              retry_cmd.args([
+                "sch", "export", "svg", "--exclude-drawing-sheet", "--no-background-color",
+                "--pages", "1", "--output", temp_sch_dir.to_str().unwrap(),
+                input_path.to_str().unwrap(),
+              ]);
+              retry_cmd.args(extra_args);
+              crate::access::configure_kicad_command(&mut retry_cmd);
+              output = retry_cmd.output().map_err(|e| e.to_string())?;
+            }
+          }
+          
+          if !output.status.success() {
+            return Err(format!(
+              "kicad-cli SCH export failed: {}",
+              String::from_utf8_lossy(&output.stderr)
+            ));
+          }
+          Ok(())
+        };
+        
+        if let Err(e) = run_sch_export(true) {
+          let _ = fs::remove_dir_all(&temp_sch_dir);
+          return Err(e);
+        }
+        
+        // kicad-cli names the file after the schematic/sheet (e.g. Venturi_MainPCB.svg)
+        let expected_raw_svg = temp_sch_dir.join(format!("{}.svg", file_stem));
+        let exported_svg = if expected_raw_svg.exists() {
+          Some(expected_raw_svg)
+        } else {
+          fs::read_dir(&temp_sch_dir)
+            .ok()
+            .and_then(|entries| {
+              entries
+                .flatten()
+                .map(|e| e.path())
+                .find(|p| p.extension().and_then(|ext| ext.to_str()) == Some("svg"))
+            })
+        };
+        
+        match exported_svg {
+          Some(src_svg) => {
+            fs::rename(&src_svg, &cached_svg_path)
+              .or_else(|_| fs::copy(&src_svg, &cached_svg_path).map(|_| ()))
+              .map_err(|e| format!("Failed to move exported schematic SVG: {}", e))?;
+            let _ = fs::remove_dir_all(&temp_sch_dir);
+          }
+          None => {
+            let _ = fs::remove_dir_all(&temp_sch_dir);
+            return Err(format!(
+              "kicad-cli SCH export succeeded but no SVG was produced for '{}'",
+              file_stem
+            ));
           }
         }
-
-        if !output.status.success() {
-          return Err(format!("kicad-cli SCH export failed: {}", String::from_utf8_lossy(&output.stderr)));
-        }
+        
         trim_svg_whitespace(&cached_svg_path)?;
       }
       let canonical = cached_svg_path.canonicalize().unwrap_or(cached_svg_path);
