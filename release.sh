@@ -151,12 +151,19 @@ if git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
   git push origin ":refs/tags/$TAG" 2>/dev/null || true
 fi
 
-echo "📤 Uploading prebuilt artifacts to draft release $TAG..."
+RELEASE_FILES=()
+for f in target/distrib/*; do
+  if [ -f "$f" ]; then
+    RELEASE_FILES+=("$f")
+  fi
+done
+
+echo "📤 Uploading ${#RELEASE_FILES[@]} prebuilt artifacts to draft release $TAG..."
 gh release create "$TAG" \
   --draft \
   --title "Release $TAG (Staging)" \
   --notes "Staging prebuilt local artifacts for CI packaging." \
-  target/distrib/*
+  "${RELEASE_FILES[@]}"
 
 echo "🏷️  Creating fresh tag $TAG..."
 git tag -a "$TAG" -m "Release $TAG"
