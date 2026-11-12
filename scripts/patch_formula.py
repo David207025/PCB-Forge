@@ -16,11 +16,6 @@ if "service do" not in content:
     working_dir var
   end
 
-  def post_install
-    (var/"log").mkpath
-    system "#{opt_bin}/pcbfapi", "service", "install" rescue nil
-  end
-
   def caveats
     <<~EOS
       pcbfapi runs as a persistent background daemon service.
@@ -34,6 +29,10 @@ if "service do" not in content:
       To verify KiCad file and CLI access:
         pcbfapi check-access
     EOS
+  end
+
+  test do
+    assert_predicate bin/"pcbfapi", :executable?
   end
 '''
     idx = content.rfind("end")
