@@ -111,14 +111,26 @@ RUST_BACKTRACE=1 dist build --tag="$TAG" --output-format=json --artifacts=local 
   > "$TMP_MANIFEST_DIR/x86_64-apple-darwin-dist-manifest.json"
 mv "$TMP_MANIFEST_DIR/x86_64-apple-darwin-dist-manifest.json" target/distrib/
 
-echo "🪟 Building x86_64-pc-windows-msvc in Docker..."
+echo "🪟 Building x86_64-pc-windows-msvc in Docker (using $BUILD_JOBS cores)..."
 docker run --rm \
+  --cpus="$BUILD_JOBS" \
   -v "$SCRIPT_DIR:/work" \
   -v pcbfapi-win-target:/target-win \
   -e CARGO_TARGET_DIR=/target-win \
+  -e CARGO_BUILD_JOBS="$BUILD_JOBS" \
   "$WIN_BUILDER_IMAGE" \
-  bash -c "set -euo pipefail; dist build --tag='$TAG' --output-format=json --artifacts=local --target=x86_64-pc-windows-msvc > /tmp/x86_64-pc-windows-msvc-dist-manifest.json && cp /target-win/distrib/* /work/target/distrib/ && mv /tmp/x86_64-pc-windows-msvc-dist-manifest.json /work/target/distrib/"
-
+  bash -c '
+    set -euo pipefail
+    shopt -s nullglob
+    dist build --tag="'"$TAG"'" --output-format=json --artifacts=local --target=x86_64-pc-windows-msvc \
+      > /tmp/x86_64-pc-windows-msvc-dist-manifest.json
+    win_files=(/target-win/distrib/*)
+    if [ ${#win_files[@]} -gt 0 ]; then
+      cp -r "${win_files[@]}" /work/target/distrib/
+    fi
+    mv /tmp/x86_64-pc-windows-msvc-dist-manifest.json /work/target/distrib/
+    test -f /work/target/distrib/pcbfapi-x86_64-pc-windows-msvc.zip
+  '
 # Step 8: Clean up old release/tags, stage prebuilt artifacts in a draft release, and push tag
 echo "🔍 Checking for existing GitHub Release for $TAG..."
 if gh release view "$TAG" &> /dev/null; then
