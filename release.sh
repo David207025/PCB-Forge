@@ -88,6 +88,8 @@ git push origin main
 echo "🛠️  Building release binaries locally (macOS) and in Docker (Windows)..."
 rm -rf target/distrib
 mkdir -p target/distrib
+BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+export CARGO_BUILD_JOBS="$BUILD_JOBS"
 
 TMP_MANIFEST_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_MANIFEST_DIR"' EXIT
