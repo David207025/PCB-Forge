@@ -21,3 +21,5 @@ tap = "David207025/homebrew-pcb-forge"
 publish-jobs = ["homebrew"]
 
 token = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+
+allow-dirty = ["ci"]
