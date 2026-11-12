@@ -308,68 +308,69 @@ jobs:
         run: |
           git config --global user.name "${GITHUB_USER}"
           git config --global user.email "${GITHUB_EMAIL}"
-
+        
           for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith(".rb")] | any)'); do
             filename=$(echo "$release" | jq '.artifacts[] | select(endswith(".rb"))' --raw-output)
             name=$(echo "$filename" | sed "s/\.rb$//")
             version=$(echo "$release" | jq .app_version --raw-output)
-
+          
             export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
-
+        
             # Inject Homebrew service daemon configuration if not already present
-            python3 -c "
-import sys
-formula_file = sys.argv[1]
-with open(formula_file, 'r') as f:
-    content = f.read()
-if 'service do' not in content:
-    service_block = '''
-  service do
-    run [opt_bin/\"pcbfapi\", \"run\"]
-    keep_alive true
-    run_type :immediate
-    environment_variables PATH: std_service_path_env
-    error_log_path var/\"log/pcbfapi.err.log\"
-    log_path var/\"log/pcbfapi.log\"
-    working_dir var
-  end
-
-  def post_install
-    (var/\"log\").mkpath
-    system \"#{opt_bin}/pcbfapi\", \"service\", \"install\" rescue nil
-  end
-
-  def caveats
-    <<~EOS
-      pcbfapi runs as a persistent background daemon service.
-      It starts automatically at boot/login.
-
-      To manage with brew services:
-        brew services start pcbfapi
-        brew services stop pcbfapi
-        brew services restart pcbfapi
-
-      To verify KiCad file and CLI access:
-        pcbfapi check-access
-    EOS
-  end
-'''
-    idx = content.rfind('end')
-    if idx != -1:
-        content = content[:idx] + service_block + content[idx:]
-        with open(formula_file, 'w') as f:
-            f.write(content)
-" "Formula/${filename}"
-
-            brew update
-            # We avoid reformatting user-provided data such as the app description and homepage.
-            brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/${filename}" || true
-
-            git add "Formula/${filename}"
-            git commit -m "${name} ${version}"
-          done
-          git push
-
+            python3 - "Formula/${filename}" << 'EOF'
+            import sys
+        
+            formula_file = sys.argv[1]
+            with open(formula_file, "r") as f:
+                content = f.read()
+        
+            if "service do" not in content:
+                service_block = '''
+              service do
+                run [opt_bin/"pcbfapi", "run"]
+                keep_alive true
+                run_type :immediate
+                environment_variables PATH: std_service_path_env
+                error_log_path var/"log/pcbfapi.err.log"
+                log_path var/"log/pcbfapi.log"
+                working_dir var
+              end
+        
+              def post_install
+                (var/"log").mkpath
+                system "#{opt_bin}/pcbfapi", "service", "install" rescue nil
+              end
+        
+              def caveats
+                <<~EOS
+                  pcbfapi runs as a persistent background daemon service.
+                  It starts automatically at boot/login.
+            
+                  To manage with brew services:
+                    brew services start pcbfapi
+                    brew services stop pcbfapi
+                    brew services restart pcbfapi
+            
+                  To verify KiCad file and CLI access:
+                    pcbfapi check-access
+                EOS
+              end
+            '''
+                idx = content.rfind("end")
+                if idx != -1:
+                    content = content[:idx] + service_block + content[idx:]
+                    with open(formula_file, "w") as f:
+                        f.write(content)
+            EOF
+        
+              brew update
+              # We avoid reformatting user-provided data such as the app description and homepage.
+              brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/${filename}" || true
+            
+              git add "Formula/${filename}"
+              git commit -m "${name} ${version}"
+            done
+            git push
   announce:
     needs:
       - plan
