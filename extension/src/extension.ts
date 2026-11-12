@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import {registerJsonPathPicker} from "./pathPicker";
 
 const execAsync = promisify(exec);
 const API_BASE = 'http://127.0.0.1:47210';
@@ -224,6 +225,8 @@ export function activate(context: vscode.ExtensionContext) {
       }
     })
   );
+
+  registerJsonPathPicker(context);
 }
 
 export function deactivate() {

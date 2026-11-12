@@ -99,8 +99,8 @@ jobs:
       - name: Download prebuilt local artifacts from draft release
         run: |
           mkdir -p target/distrib
-          gh release download "${{ needs.plan.outputs.tag }}" --dir target/distrib
-          gh release delete "${{ needs.plan.outputs.tag }}" --yes
+          gh release download "${{ needs.plan.outputs.tag }}" --repo "${{ github.repository }}" --dir target/distrib
+          gh release delete "${{ needs.plan.outputs.tag }}" --repo "${{ github.repository }}" --yes
       - name: Upload local artifacts to workflow
         uses: actions/upload-artifact@v7
         with:
