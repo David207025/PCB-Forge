@@ -99,11 +99,11 @@ if ! docker image inspect "$WIN_BUILDER_IMAGE" >/dev/null 2>&1; then
 fi
 
 echo "🍎 Building aarch64-apple-darwin..."
-dist build --tag="$TAG" --print=linkage --output-format=json --artifacts=local --target=aarch64-apple-darwin \
+dist build --tag="$TAG" --output-format=json --artifacts=local --target=aarch64-apple-darwin \
   > target/distrib/aarch64-apple-darwin-dist-manifest.json
 
 echo "🍎 Building x86_64-apple-darwin..."
-dist build --tag="$TAG" --print=linkage --output-format=json --artifacts=local --target=x86_64-apple-darwin \
+dist build --tag="$TAG" --output-format=json --artifacts=local --target=x86_64-apple-darwin \
   > target/distrib/x86_64-apple-darwin-dist-manifest.json
 
 echo "🪟 Building x86_64-pc-windows-msvc in Docker..."
@@ -112,8 +112,7 @@ docker run --rm \
   -v pcbfapi-win-target:/target-win \
   -e CARGO_TARGET_DIR=/target-win \
   "$WIN_BUILDER_IMAGE" \
-  bash -c "dist build --tag='$TAG' --print=linkage --output-format=json --artifacts=local --target=x86_64-pc-windows-msvc > /work/target/distrib/x86_64-pc-windows-msvc-dist-manifest.json && cp /target-win/distrib/*.zip /work/target/distrib/"
-
+  bash -c "set -euo pipefail; dist build --tag='$TAG' --output-format=json --artifacts=local --target=x86_64-pc-windows-msvc > /work/target/distrib/x86_64-pc-windows-msvc-dist-manifest.json && cp /target-win/distrib/* /work/target/distrib/"
 # Step 8: Clean up old release/tags, stage prebuilt artifacts in a draft release, and push tag
 echo "🔍 Checking for existing GitHub Release for $TAG..."
 if gh release view "$TAG" &> /dev/null; then
