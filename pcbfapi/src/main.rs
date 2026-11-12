@@ -629,6 +629,7 @@ async fn handle_preview_template(
       size: "a4".to_string(),
       orientation: false,
     },
+    content: String::new(),
     local_fields: HashMap::new(),
     path: "".to_string(),
     extra_args: None,

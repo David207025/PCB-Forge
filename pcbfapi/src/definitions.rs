@@ -71,6 +71,9 @@ pub struct PageConfig {
   pub local_fields: HashMap<String, String>,
   /// Path to the source file for this page.
   pub path: String,
+  /// Custom content type passed to `render_page` (e.g. "sch", "pcb", "md").
+  #[serde(default)]
+  pub content: String,
   /// Optional extra arguments passed verbatim to `kicad-cli` during export.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub extra_args: Option<Vec<String>>,
