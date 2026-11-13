@@ -13,9 +13,7 @@
   "engines": {
     "vscode": "^1.89.0"
   },
-  "activationEvents": [
-    "onCommand:pcb-forge.openEditor"
-  ],
+  "activationEvents": ["onCommand:pcb-forge.openEditor"],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -89,8 +87,21 @@
     },
     "languages": [
       {
-        "id": "json",
-        "extensions": [".pcbf"]
+        "id": "pcbf",
+        "aliases": ["PCB Forge Project", "pcbf"],
+        "extensions": [".pcbf"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./images/icon.png",
+          "dark": "./images/icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "pcbf",
+        "scopeName": "source.pcbf",
+        "path": "./syntaxes/pcbf.tmLanguage.json"
       }
     ]
   },

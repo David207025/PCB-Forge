@@ -1,0 +1,10 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "PCB Forge Project",
+    "scopeName": "source.pcbf",
+    "patterns": [
+        {
+            "include": "source.json"
+        }
+    ]
+}
