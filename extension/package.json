@@ -86,7 +86,13 @@
           "group": "navigation"
         }
       ]
-    }
+    },
+    "languages": [
+      {
+        "id": "json",
+        "extensions": [".pcbf"]
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "pnpm compile",

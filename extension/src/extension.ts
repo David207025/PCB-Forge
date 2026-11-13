@@ -120,7 +120,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Command: Create Project (/init-project)
+// Command: Create Project (/init-project)
   context.subscriptions.push(
     vscode.commands.registerCommand('pcb-forge.createProject', async () => {
       const templateName = await vscode.window.showInputBox({
@@ -137,7 +137,7 @@ export function activate(context: vscode.ExtensionContext) {
       });
       if (!folderUri || folderUri.length === 0) return;
 
-      const targetPath = path.join(folderUri[0].fsPath, `${templateName}.json`);
+      const targetPath = path.join(folderUri[0].fsPath, `${templateName}.pcbf`);
 
       try {
         const res = await fetch(`${API_BASE}/init-project`, {
@@ -180,31 +180,71 @@ export function activate(context: vscode.ExtensionContext) {
   // Command: Generate Project PDF (/gen-project)
   context.subscriptions.push(
     vscode.commands.registerCommand('pcb-forge.generateProject', async () => {
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      if (!workspaceFolders) {
-        vscode.window.showErrorMessage('No workspace open in VS Code.');
-        return;
-      }
-
-      const rootPath = workspaceFolders[0].uri.fsPath;
-      const envPath = path.join(rootPath, '.env');
       let targetFile: string | null = null;
 
-      if (fs.existsSync(envPath)) {
-        const envContent = fs.readFileSync(envPath, 'utf8');
-        const match = envContent.match(/^PROJECT_PATH=(.+)$/m);
-        if (match) targetFile = match[1].trim();
+      // 1. Check currently active editor first
+      const activeEditor = vscode.window.activeTextEditor;
+      if (activeEditor && activeEditor.document.uri.scheme === 'file') {
+        const doc = activeEditor.document;
+        const ext = path.extname(doc.fileName).toLowerCase();
+
+        if (ext === '.json') {
+          vscode.window.showErrorMessage(
+            'PCB Forge only accepts .pcbf project files. Rename this file to .pcbf to generate a project.'
+          );
+          return;
+        }
+
+        if (ext === '.pcbf') {
+          const check = validatePcbForgeProjectFile(doc.getText());
+          if (!check.valid) {
+            vscode.window.showErrorMessage(`Cannot generate project from ${path.basename(doc.fileName)}: ${check.reason}`);
+            return;
+          }
+
+          if (doc.isDirty) {
+            await doc.save();
+          }
+          targetFile = doc.uri.fsPath;
+        }
       }
 
+      // 2. Fallback: check workspace .env for a .pcbf PROJECT_PATH
+      if (!targetFile) {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (workspaceFolders) {
+          const envPath = path.join(workspaceFolders[0].uri.fsPath, '.env');
+          if (fs.existsSync(envPath)) {
+            const envContent = fs.readFileSync(envPath, 'utf8');
+            const match = envContent.match(/^PROJECT_PATH=(.+)$/m);
+            if (match) {
+              const envTarget = match[1].trim();
+              if (!envTarget.toLowerCase().endsWith('.pcbf')) {
+                vscode.window.showErrorMessage('PROJECT_PATH in .env must point to a .pcbf file.');
+                return;
+              }
+              targetFile = envTarget;
+            }
+          }
+        }
+      }
+
+      // 3. Fallback: prompt user to select a .pcbf file
       if (!targetFile) {
         const fileUri = await vscode.window.showOpenDialog({
           canSelectFiles: true,
           canSelectFolders: false,
-          filters: { 'JSON Project': ['json'] },
-          openLabel: 'Select Project File'
+          filters: { 'PCB Forge Project': ['pcbf'] },
+          openLabel: 'Select .pcbf Project File'
         });
         if (!fileUri || fileUri.length === 0) return;
+
         targetFile = fileUri[0].fsPath;
+        const check = validatePcbForgeProjectFile(fs.readFileSync(targetFile, 'utf8'));
+        if (!check.valid) {
+          vscode.window.showErrorMessage(`Invalid .pcbf project file: ${check.reason}`);
+          return;
+        }
       }
 
       try {
@@ -436,6 +476,34 @@ function sendTemplatesState() {
     command: 'setTemplatesState',
     templates
   });
+}
+
+// Helper: validates that a file is a PCB Forge project JSON/PCBF document
+function validatePcbForgeProjectFile(rawText: string): { valid: boolean; reason?: string } {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (err: any) {
+    return { valid: false, reason: `Invalid JSON syntax: ${err.message}` };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { valid: false, reason: 'Project file must contain a JSON object.' };
+  }
+
+  if (typeof parsed.$schema !== 'string' || !parsed.$schema.includes('.schema.json')) {
+    return { valid: false, reason: 'Missing or invalid "$schema" property pointing to a template schema.' };
+  }
+
+  if (!parsed.global_fields || typeof parsed.global_fields !== 'object' || Array.isArray(parsed.global_fields)) {
+    return { valid: false, reason: 'Missing "global_fields" object.' };
+  }
+
+  if (!Array.isArray(parsed.pages) || parsed.pages.length === 0) {
+    return { valid: false, reason: 'Project must define a non-empty "pages" array.' };
+  }
+
+  return { valid: true };
 }
 
 function notifyWebviewTemplateUpdate() {

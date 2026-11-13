@@ -38,7 +38,7 @@
       "variant": "default",
       "content": "pcb",
       "layout": {
-        "orientation": true,
+        "orientation": false,
         "size": "a4"
       },
       "extra_args": [
@@ -50,7 +50,7 @@
         "page": "1",
         "pages": "1"
       },
-      "path": "/Users/davidvacaroiu/Documents/_School_/Maturaprojekt/Venturi/Hardware/Venturi_MainPCB/Venturi_MainPCB.kicad_pcb;F.Cu"
+      "path": "/Users/davidvacaroiu/Documents/_School_/Maturaprojekt/Venturi/Hardware/Venturi_MainPCB/Venturi_MainPCB.kicad_pcb;F.Cu,Edge.Cuts"
     },
     {
       "variant": "default",

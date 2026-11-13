@@ -118,11 +118,5 @@ export function registerJsonPathPicker(context: vscode.ExtensionContext): void {
 }
 
 function isPcbForgeConfig(document: vscode.TextDocument): boolean {
-  const fileName = path.basename(document.fileName).toLowerCase();
-  if (fileName.includes('pcb-forge') || fileName.includes('pcbf')) {
-    return true;
-  }
-  // Fallback: check top of file for a schema or project marker
-  const header = document.getText(new vscode.Range(0, 0, Math.min(20, document.lineCount), 0));
-  return header.includes('pcb-forge');
+  return path.extname(document.fileName).toLowerCase() === '.pcbf';
 }

@@ -502,10 +502,10 @@ async fn handle_init_project(
     });
   
   let target_path = std::path::Path::new(&payload.path);
-  let dest_file_path = if target_path.extension().and_then(|e| e.to_str()) == Some("json") {
+  let dest_file_path = if target_path.extension().and_then(|e| e.to_str()) == Some("pcbf") {
     target_path.to_path_buf()
   } else {
-    target_path.join(format!("{}.json", template_name))
+    target_path.join(format!("{}.pcbf", template_name))
   };
   
   if let Some(parent) = dest_file_path.parent() {
@@ -669,6 +669,13 @@ async fn handle_gen_project(
     Ok(p) => p,
     Err(e) => return ApiResponse::error(StatusCode::BAD_REQUEST, format!("Invalid project path: {}", e)),
   };
+  
+  if canonical_json_path.extension().and_then(|e| e.to_str()) != Some("pcbf") {
+    return ApiResponse::error(
+      StatusCode::BAD_REQUEST,
+      "Project file must have a .pcbf extension",
+    );
+  }
   
   let project_dir = match canonical_json_path.parent() {
     Some(p) => p,
