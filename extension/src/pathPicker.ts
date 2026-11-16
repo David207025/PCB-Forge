@@ -2,8 +2,10 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 // Keys that expect a file or directory path
-const FILE_KEYS = new Set(['template', 'schematic', 'pcb', 'bom', 'logo', 'input']);
+const FILE_KEYS = new Set(['path', 'template', 'schematic', 'pcb', 'bom', 'logo', 'input']);
 const FOLDER_KEYS = new Set(['outputDir', 'assetsDir']);
+
+const PCBF_SELECTOR: vscode.DocumentSelector = [{ language: 'pcbf' }];
 
 interface PickPathArgs {
   uri: vscode.Uri;
@@ -12,14 +14,26 @@ interface PickPathArgs {
   selectFolder: boolean;
 }
 
+interface MatchedPathField {
+  valueRange: vscode.Range;
+  currentValue: string;
+  selectFolder: boolean;
+}
+
 export function registerJsonPathPicker(context: vscode.ExtensionContext): void {
-  // 1. Command triggered when the user clicks the inline 📂 badge
+  // 1. Command triggered by either the inline 📂 badge or the Quick Fix menu
   const pickCommand = vscode.commands.registerCommand(
     'pcb-forge.pickJsonPath',
     async ({ uri, valueRange, currentValue, selectFolder }: PickPathArgs) => {
       const baseDir = path.dirname(uri.fsPath);
-      const initialUri = currentValue
-        ? vscode.Uri.file(path.resolve(baseDir, currentValue))
+
+      // Preserve optional ";layer1,layer2" suffix used by .kicad_pcb entries
+      const semiIdx = currentValue.indexOf(';');
+      const rawPathPart = semiIdx >= 0 ? currentValue.slice(0, semiIdx).trim() : currentValue.trim();
+      const layerSuffix = semiIdx >= 0 ? currentValue.slice(semiIdx) : '';
+
+      const initialUri = rawPathPart
+        ? vscode.Uri.file(path.resolve(baseDir, rawPathPart))
         : vscode.Uri.file(baseDir);
 
       const selected = await vscode.window.showOpenDialog({
@@ -28,13 +42,19 @@ export function registerJsonPathPicker(context: vscode.ExtensionContext): void {
         canSelectMany: false,
         defaultUri: initialUri,
         openLabel: selectFolder ? 'Select Folder' : 'Select File',
+        filters: selectFolder
+          ? undefined
+          : {
+              'PCB Forge Assets': ['kicad_sch', 'kicad_pcb', 'md', 'csv', 'svg', 'png', 'jpg', 'jpeg'],
+              'All Files': ['*'],
+            },
       });
 
       if (!selected || selected.length === 0) {
         return;
       }
 
-      // Keep paths relative to the JSON file and normalized to forward slashes
+      // Keep paths relative to the .pcbf file and normalized to forward slashes
       let relativePath = path
         .relative(baseDir, selected[0].fsPath)
         .split(path.sep)
@@ -42,6 +62,10 @@ export function registerJsonPathPicker(context: vscode.ExtensionContext): void {
 
       if (!relativePath.startsWith('.') && relativePath !== '') {
         relativePath = `./${relativePath}`;
+      }
+
+      if (!selectFolder && relativePath.toLowerCase().endsWith('.kicad_pcb') && layerSuffix) {
+        relativePath += layerSuffix;
       }
 
       const edit = new vscode.WorkspaceEdit();
@@ -52,69 +76,95 @@ export function registerJsonPathPicker(context: vscode.ExtensionContext): void {
 
   // 2. Inline hint provider (renders the clickable 📂 icon before the string value)
   const hintProvider = vscode.languages.registerInlayHintsProvider(
-    [{ language: 'json' }, { language: 'jsonc' }],
+    PCBF_SELECTOR,
     {
       provideInlayHints(document, range) {
-        // Scope only to PCB-Forge config files so package.json/tsconfig.json stay untouched
         if (!isPcbForgeConfig(document)) {
           return [];
         }
 
         const hints: vscode.InlayHint[] = [];
-        const keyValueRegex = /"([^"]+)"\s*:\s*("(?:\\.|[^"\\])*")/g;
-
         for (let lineNum = range.start.line; lineNum <= range.end.line; lineNum++) {
-          const lineText = document.lineAt(lineNum).text;
-          let match: RegExpExecArray | null;
-
-          while ((match = keyValueRegex.exec(lineText)) !== null) {
-            const key = match[1];
-            const rawStringLiteral = match[2];
-            const isFile = FILE_KEYS.has(key);
-            const isFolder = FOLDER_KEYS.has(key);
-
-            if (!isFile && !isFolder) {
-              continue;
-            }
-
-            const valueStartCol = match.index + match[0].lastIndexOf(rawStringLiteral);
-            const valueEndCol = valueStartCol + rawStringLiteral.length;
-            const valueRange = new vscode.Range(lineNum, valueStartCol, lineNum, valueEndCol);
-
-            let currentValue = '';
-            try {
-              currentValue = JSON.parse(rawStringLiteral);
-            } catch {
-              // Ignore malformed intermediate string while typing
-            }
-
+          for (const field of findPathFieldsOnLine(document, lineNum)) {
             const part = new vscode.InlayHintLabelPart('📂');
-            part.tooltip = isFolder ? 'Browse folder...' : 'Browse file...';
+            part.tooltip = field.selectFolder ? 'Browse folder...' : 'Browse file...';
             part.command = {
               title: 'Select Path',
               command: 'pcb-forge.pickJsonPath',
-              arguments: [
-                {
-                  uri: document.uri,
-                  valueRange,
-                  currentValue,
-                  selectFolder: isFolder,
-                } satisfies PickPathArgs,
-              ],
+              arguments: [{ uri: document.uri, ...field } satisfies PickPathArgs],
             };
 
-            const hint = new vscode.InlayHint(valueRange.start, [part]);
+            const hint = new vscode.InlayHint(field.valueRange.start, [part]);
             hint.paddingRight = true;
             hints.push(hint);
           }
         }
-
         return hints;
       },
     }
   );
 
-  context.subscriptions.push(pickCommand, hintProvider);
+  // 3. Code action provider (shows "Browse file..." lightbulb / Cmd+. when cursor is on the line)
+  const codeActionProvider = vscode.languages.registerCodeActionsProvider(
+    PCBF_SELECTOR,
+    {
+      provideCodeActions(document, range) {
+        if (!isPcbForgeConfig(document)) {
+          return [];
+        }
+
+        const actions: vscode.CodeAction[] = [];
+        for (const field of findPathFieldsOnLine(document, range.start.line)) {
+          const title = field.selectFolder ? 'Browse folder...' : 'Browse file...';
+          const action = new vscode.CodeAction(title, vscode.CodeActionKind.QuickFix);
+          action.isPreferred = true;
+          action.command = {
+            title,
+            command: 'pcb-forge.pickJsonPath',
+            arguments: [{ uri: document.uri, ...field } satisfies PickPathArgs],
+          };
+          actions.push(action);
+        }
+        return actions;
+      },
+    },
+    { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+  );
+
+  context.subscriptions.push(pickCommand, hintProvider, codeActionProvider);
+}
+
+function findPathFieldsOnLine(document: vscode.TextDocument, lineNum: number): MatchedPathField[] {
+  const results: MatchedPathField[] = [];
+  const lineText = document.lineAt(lineNum).text;
+  const keyValueRegex = /"([^"]+)"\s*:\s*("(?:\\.|[^"\\])*")/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = keyValueRegex.exec(lineText)) !== null) {
+    const key = match[1];
+    const rawStringLiteral = match[2];
+    const isFile = FILE_KEYS.has(key);
+    const isFolder = FOLDER_KEYS.has(key);
+
+    if (!isFile && !isFolder) {
+      continue;
+    }
+
+    const valueStartCol = match.index + match[0].lastIndexOf(rawStringLiteral);
+    const valueEndCol = valueStartCol + rawStringLiteral.length;
+    const valueRange = new vscode.Range(lineNum, valueStartCol, lineNum, valueEndCol);
+
+    let currentValue = '';
+    try {
+      currentValue = JSON.parse(rawStringLiteral);
+    } catch {
+      // Ignore malformed intermediate string while typing
+    }
+
+    results.push({ valueRange, currentValue, selectFolder: isFolder });
+  }
+
+  return results;
 }
 
 function isPcbForgeConfig(document: vscode.TextDocument): boolean {

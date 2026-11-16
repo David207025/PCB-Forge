@@ -86,7 +86,7 @@ Resolves a raw path string into a relative path string relative to `base_dir`.
 
 ---
 
-#### `pub fn copy_template_assets(template_name: &str, target_dir: &Path) -> Result<Vec<PathBuf>, String>`
+#### `pub fn copy_template_assets( template_name: &str, target_dir: &Path, ) -> Result<Vec<PathBuf>, String>`
 
 Copies all template assets (meta.json, schema.json, bom/, default/, etc.)
 into `target_dir` and returns a list of every top-level path created.
@@ -113,9 +113,20 @@ directory, and the target output PDF path. It:
 
 ---
 
-#### `fn build_single_page_script( template_name: &str, project: &ProjectConfig, project_dir: &Path, ) -> Result<String, String>`
+#### `pub fn stage_page_bundle( template_name: &str, global_fields: &std::collections::HashMap<String, String>, page: &PageConfig, project_dir: &Path, target_dir: &Path, ) -> Result<PathBuf, String>`
 
-Builds the standalone Typst script for rendering a single page.
+Stages a self-contained Typst page folder at `target_dir`:
+- Copies template assets (e.g. `logo.png`)
+- Exports/copies the page source asset (`.svg`, `.md` + images, `.csv`, etc.)
+- Writes `page.typ` exposing `#render()`, `global_fields`, and `page_data`
+  and invoking `#render()` at top level so both `#include` and `#import` work.
+
+---
+
+#### `pub fn compute_template_checksum(meta: &Template, variants: &[String]) -> String`
+
+Computes a deterministic FNV-1a 128-bit hex digest over canonical template inputs
+(sorted global_fields, sorted local_fields, and sorted variant directory names).
 
 ---
 

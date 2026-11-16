@@ -266,6 +266,56 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand('pcb-forge.exportPages', async () => {
+      const activeEditor = vscode.window.activeTextEditor;
+      if (!activeEditor || path.extname(activeEditor.document.fileName).toLowerCase() !== '.pcbf') {
+        vscode.window.showErrorMessage('Open a .pcbf project file first to export Typst pages.');
+        return;
+      }
+
+      const check = validatePcbForgeProjectFile(activeEditor.document.getText());
+      if (!check.valid) {
+        vscode.window.showErrorMessage(`Invalid .pcbf file: ${check.reason}`);
+        return;
+      }
+
+      if (activeEditor.document.isDirty) {
+        await activeEditor.document.save();
+      }
+
+      const folderUri = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        defaultUri: vscode.Uri.file(path.dirname(activeEditor.document.uri.fsPath)),
+        openLabel: 'Select Export Folder (or Cancel for default)',
+      });
+
+      const outputDir = folderUri && folderUri.length > 0 ? folderUri[0].fsPath : undefined;
+
+      try {
+        const res = await fetch(`${API_BASE}/export-pages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            path: activeEditor.document.uri.fsPath,
+            output_dir: outputDir,
+          }),
+        });
+        const body = (await res.json()) as { status: string; message: string };
+
+        if (res.ok && body.status === 'success') {
+          vscode.window.showInformationMessage(body.message);
+        } else {
+          vscode.window.showErrorMessage(body.message || 'Failed to export Typst pages.');
+        }
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`API Connection Error: ${err.message}`);
+      }
+    })
+  );
+
   registerJsonPathPicker(context);
 }
 
@@ -449,7 +499,6 @@ function ensureWebviewLoaded(context: vscode.ExtensionContext): vscode.WebviewPa
   return activeWebviewPanel;
 }
 
-/** Reads ~/.pcb-forge/templates to determine generated vs non-generated status */
 function sendTemplatesState() {
   if (!activeWebviewPanel) return;
 
@@ -463,18 +512,31 @@ function sendTemplatesState() {
     const folders = fs.readdirSync(srcDir, { withFileTypes: true });
     for (const folder of folders) {
       if (folder.isDirectory()) {
+        const templateFolder = path.join(srcDir, folder.name);
+        const metaPath = path.join(templateFolder, 'meta.json');
         const schemaPath = path.join(genDir, `${folder.name}.schema.json`);
-        templates.push({
-          name: folder.name,
-          isGenerated: fs.existsSync(schemaPath)
-        });
+
+        let isGenerated = false;
+        if (fs.existsSync(schemaPath)) {
+          try {
+            const schemaJson = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+            const expectedChecksum = computeTemplateChecksum(metaPath, templateFolder);
+            isGenerated =
+              typeof expectedChecksum === 'string' &&
+              schemaJson.$comment === `pcbf-checksum:${expectedChecksum}`;
+          } catch {
+            isGenerated = false;
+          }
+        }
+
+        templates.push({ name: folder.name, isGenerated });
       }
     }
   }
 
   activeWebviewPanel.webview.postMessage({
     command: 'setTemplatesState',
-    templates
+    templates,
   });
 }
 
@@ -528,4 +590,51 @@ function getWebviewHtml(context: vscode.ExtensionContext, webview: vscode.Webvie
   const cliScript = `<script>window.IS_CLI_AVAILABLE = ${isCliAvailable};</script>`;
 
   return html.replace('<head>', `<head>\n    ${cspMeta}\n    ${cliScript}`);
+}
+
+function computeTemplateChecksum(metaPath: string, templateFolderPath: string): string | null {
+  if (!fs.existsSync(metaPath)) return null;
+
+  let meta: any;
+  try {
+    meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  } catch {
+    return null;
+  }
+
+  const sortRecord = (obj: Record<string, string> = {}) =>
+    Object.fromEntries(Object.keys(obj).sort().map((k) => [k, obj[k]]));
+
+  const variants: string[] = [];
+  for (const entry of fs.readdirSync(templateFolderPath, { withFileTypes: true })) {
+    if (
+      entry.isDirectory() &&
+      !entry.name.startsWith('.') &&
+      fs.existsSync(path.join(templateFolderPath, entry.name, 'layout.typ'))
+    ) {
+      variants.push(entry.name);
+    }
+  }
+  if (variants.length === 0) {
+    variants.push('default');
+  } else {
+    variants.sort();
+  }
+
+  const canonical = JSON.stringify({
+    global_fields: sortRecord(meta.global_fields),
+    local_fields: sortRecord(meta.local_fields),
+    variants,
+  });
+
+  // 128-bit FNV-1a matching forge::compute_template_checksum
+  const mask = (1n << 128n) - 1n;
+  let hash = 0x6c62272e07bb014262b821756295c58dn;
+  const prime = 0x0000000001000000000000000000013bn;
+  for (const byte of Buffer.from(canonical, 'utf8')) {
+    hash ^= BigInt(byte);
+    hash = (hash * prime) & mask;
+  }
+
+  return hash.toString(16).padStart(32, '0');
 }
