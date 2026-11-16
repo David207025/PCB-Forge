@@ -113,13 +113,10 @@ directory, and the target output PDF path. It:
 
 ---
 
-#### `pub fn stage_page_bundle( template_name: &str, global_fields: &std::collections::HashMap<String, String>, page: &PageConfig, project_dir: &Path, target_dir: &Path, ) -> Result<PathBuf, String>`
+#### `pub fn stage_layout_and_assets( template_name: &str, schema_name: &str, project_dir: &Path, target_dir: &Path, ) -> Result<(), String>`
 
-Stages a self-contained Typst page folder at `target_dir`:
-- Copies template assets (e.g. `logo.png`)
-- Exports/copies the page source asset (`.svg`, `.md` + images, `.csv`, etc.)
-- Writes `page.typ` exposing `#render()`, `global_fields`, and `page_data`
-  and invoking `#render()` at top level so both `#include` and `#import` work.
+Copies only shared template assets (images/fonts, skipping `meta.json` and `.typ` files)
+and places the active variant's `layout.typ` at `target_dir/layout.typ`.
 
 ---
 

@@ -44,4 +44,4 @@ if [ "${1:-}" = "--install" ]; then
 else
   echo "✅ Ready at: $VSIX_PATH"
   echo "   Run './build-vsix.sh --install' to install it directly into VS Code and Antigravity."
-fi
+fi>

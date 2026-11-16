@@ -1127,11 +1127,39 @@ pub fn generate_page_pdf(
     Ok(())
 }
 
-/// Stages a self-contained Typst page folder at `target_dir`:
-/// - Copies template assets (e.g. `logo.png`)
-/// - Exports/copies the page source asset (`.svg`, `.md` + images, `.csv`, etc.)
-/// - Writes `page.typ` exposing `#render()`, `global_fields`, and `page_data`
-///   and invoking `#render()` at top level so both `#include` and `#import` work.
+/// Copies only shared template assets (images/fonts, skipping `meta.json` and `.typ` files)
+/// and places the active variant's `layout.typ` at `target_dir/layout.typ`.
+pub fn stage_layout_and_assets(
+    template_name: &str,
+    schema_name: &str,
+    project_dir: &Path,
+    target_dir: &Path,
+) -> Result<(), String> {
+    let template_dir = get_templates_src_dir().join(template_name);
+
+    // Copy shared assets from template root and variant folder (excluding meta.json and .typ layouts)
+    for dir in [&template_dir, &template_dir.join(schema_name)] {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let src = entry.path();
+                let file_name = entry.file_name();
+                let name_str = file_name.to_string_lossy();
+
+                if src.is_file() && name_str != "meta.json" && !name_str.ends_with(".typ") {
+                    let _ = fs::copy(&src, target_dir.join(&file_name));
+                }
+            }
+        }
+    }
+
+    // Copy the resolved layout file cleanly as `layout.typ` in target_dir
+    let layout_file = find_page_layout_file(template_name, schema_name, project_dir)?;
+    fs::copy(&layout_file, target_dir.join("layout.typ"))
+        .map_err(|e| format!("Failed to copy layout file {:?}: {}", layout_file, e))?;
+
+    Ok(())
+}
+
 pub fn stage_page_bundle(
     template_name: &str,
     global_fields: &std::collections::HashMap<String, String>,
@@ -1151,9 +1179,10 @@ pub fn stage_page_bundle(
     let target_dir = target_dir
         .canonicalize()
         .unwrap_or_else(|_| target_dir.to_path_buf());
+    let schema_name = page.variant.as_deref().unwrap_or("default");
 
-    // 1. Copy template assets (logo.png, helper files, etc.)
-    let _ = copy_template_assets(template_name, &target_dir)?;
+    // 1. Copy shared assets (e.g. logo.png) and active layout.typ
+    stage_layout_and_assets(template_name, schema_name, project_dir, &target_dir)?;
 
     // 2. Resolve & export page asset directly into target_dir
     let mut page_working_copy = page.clone();
@@ -1174,13 +1203,13 @@ pub fn stage_page_bundle(
         page_working_copy.path = relative_asset_path.to_string_lossy().replace('\\', "/");
     }
 
-    // 3. Build self-contained page.typ
+    // 3. Write clean page.typ
     let single_project = ProjectConfig {
         global_fields: global_fields.clone(),
         pages: vec![page_working_copy],
     };
 
-    let typst_script = build_single_page_script(template_name, &single_project, &target_dir)?;
+    let typst_script = build_single_page_script(&single_project)?;
     let page_typ_path = target_dir.join("page.typ");
     fs::write(&page_typ_path, typst_script)
         .map_err(|e| format!("Failed to write {:?}: {}", page_typ_path, e))?;
@@ -1188,38 +1217,18 @@ pub fn stage_page_bundle(
     Ok(page_typ_path)
 }
 
-fn build_single_page_script(
-    template_name: &str,
-    project: &ProjectConfig,
-    project_dir: &Path,
-) -> Result<String, String> {
+fn build_single_page_script(project: &ProjectConfig) -> Result<String, String> {
     let project_val =
         serde_json::to_value(project).unwrap_or(serde_json::Value::Object(Default::default()));
     let project_typst = json_to_typst(&project_val);
 
-    let page = project
-        .pages
-        .first()
-        .ok_or("No page provided for rendering")?;
-    let schema_name = page.variant.as_deref().unwrap_or("default");
-
-    let layout_file = find_page_layout_file(template_name, schema_name, project_dir)?;
-    let layout_code = fs::read_to_string(&layout_file)
-        .map_err(|e| format!("Failed to read layout file {:?}: {}", layout_file, e))?;
-
     Ok(format!(
-        r#"
-#import "@preview/cmarker:0.1.10"
+        r#"#import "layout.typ": render_page
 
-// --- INJECTED LAYOUT DEFINITION ---
-{}
-
-// --- INJECTED PROJECT DATA ---
 #let project = {}
 #let global_fields = project.global_fields
 #let page_data = project.pages.at(0)
 
-// --- REUSABLE RENDER FUNCTION (for #import "page.typ": render) ---
 #let render(
   layout: page_data.layout,
   local_fields: page_data.local_fields,
@@ -1230,10 +1239,9 @@ fn build_single_page_script(
   render_page(layout, local_fields, global_fields, content, path)
 }}
 
-// --- DIRECT EXECUTION (for standalone compilation or #include "page.typ") ---
 #render()
 "#,
-        layout_code, project_typst
+        project_typst
     ))
 }
 

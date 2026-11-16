@@ -74,6 +74,10 @@
       {
         "command": "pcb-forge.installDaemon",
         "title": "PCB Forge: Register Background Service (Boot Autostart)"
+      },
+      {
+        "command": "pcb-forge.exportPages",
+        "title": "PCB Forge: Export pages to Typst"
       }
     ],
     "menus": {

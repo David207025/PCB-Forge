@@ -1,0 +1,27 @@
+{
+  "$schema": "file:///Users/davidvacaroiu/.pcb-forge/schemas/template.schema.json",
+  "global_fields": {
+    "name": "Max Mustermann",
+    "tolerance": "",
+    "material": "",
+    "id_nr": "xAHEL",
+    "gez": "MusM",
+    "gepr": "MusM",
+    "betreuer": "SreS",
+    "share": "SreS",
+    "title": "Projektname_1",
+    "subtitle": "Projektname_2",
+    "version": "1.0",
+    "revision": "1",
+    "document_status": "Fertigung",
+    "scale": "1:1",
+    "lang": "DE",
+    "date": "09.09.2026"
+  },
+  "local_fields": {
+    "document_type": "Schaltplan",
+    "document_title": "Beilage",
+    "page": "1",
+    "pages": "1"
+  }
+}
