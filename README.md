@@ -2,6 +2,8 @@
 
 A comprehensive, developer-centric documentation toolchain for hardware and PCB engineers. **PCB Forge** integrates a **VS Code extension**, a **native Rust backend (`pcbfapi`)**, automated **KiCad CLI** exports, and an in-memory **Typst** compilation engine to generate publication-grade PDF documentation, manufacturing packets, and schematic sheets directly from your EDA project files.
 
+**Note:** The current repository status is for the new implementation of PCB-Forge. Past versions have been deleted due to incompatibility and performance issues.
+
 ---
 
 ## 🏗️ Architecture Overview

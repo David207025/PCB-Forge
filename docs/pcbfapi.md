@@ -86,13 +86,6 @@ Resolves a raw path string into a relative path string relative to `base_dir`.
 
 ---
 
-#### `pub fn copy_template_assets( template_name: &str, target_dir: &Path, ) -> Result<Vec<PathBuf>, String>`
-
-Copies all template assets (meta.json, schema.json, bom/, default/, etc.)
-into `target_dir` and returns a list of every top-level path created.
-
----
-
 #### `pub fn preprocess_markdown_and_copy_dependencies( md_content: &str, md_file_path: &Path, out_dir: &Path, ) -> String`
 
 Preprocesses Markdown content, resolves and copies all file dependencies (like images)
@@ -218,7 +211,7 @@ Compiles a raw Typst script string into PDF bytes using the in-memory compiler e
 
 ---
 
-#### `pub fn compile_pdf_with_root(main_content: String, root_dir: Option<&Path>) -> Result<Vec<u8>, String>`
+#### `pub fn compile_pdf_with_root( main_content: String, root_dir: Option<&Path>, ) -> Result<Vec<u8>, String>`
 
 Compiles a raw Typst script string into PDF bytes with a root search path.
 
