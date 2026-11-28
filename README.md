@@ -118,14 +118,13 @@ The project includes several automation scripts at the repository root. Below is
   8. Creates and pushes a fresh Git tag (`vX.Y.Z`), triggering the GitHub Actions `cargo-dist` workflow to build cross-platform binaries, installers, and update the Homebrew tap.
 * **When to use:** When you are ready to publish a new official release of PCB Forge.
 
-### 6. `retag.sh` — CI Re-trigger Utility
+### 6. `retag.sh` — CI Re-trigger & VSIX Publish Utility
 * **Command:** `./retag.sh`
 * **What it does:**
   * Reads the current version from `pcbfapi/Cargo.toml`.
-  * Deletes any existing GitHub Release for that tag using the `gh` CLI.
-  * Deletes the local Git tag and the remote Git tag on GitHub.
-  * Recreates the tag at the current commit and pushes it to GitHub.
-* **When to use:** If a GitHub Actions build failed on a tag or you need to re-trigger CI for the same version without bumping the version number.
+  * Builds and packages the `.vsix` bundle and publishes it to the VS Code Marketplace via `@vscode/vsce`.
+  * Deletes any existing GitHub Release and local/remote Git tag for that version, then recreates and pushes the tag to re-trigger CI.
+* **When to use:** When you need to publish an updated VSIX and re-trigger CI builds for the current version without bumping the version number.
 
 ### 7. `wipe-tag.sh` — Tag Teardown Utility
 * **Command:** `./wipe-tag.sh`
@@ -180,6 +179,6 @@ The project includes several automation scripts at the repository root. Below is
 
 ---
 
-## 📄 License
+## 🧪 Example & Testing Environment
 
-This project is licensed under the ISC License.
+A complete, self-contained example workspace is available in the [`test/`](./test) directory (see [`test/README.md`](./test/README.md) for full setup and usage instructions). It includes a sample `.pcbf` project configuration, cloned **Venturi** KiCad schematic and PCB files, and an automated script that installs the required template into `~/.pcb-forge/templates`, syncs its schema, and compiles a full multi-page PDF document via the `pcbfapi` daemon.

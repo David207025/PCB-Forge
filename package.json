@@ -1,5 +1,5 @@
 {
-  "name": "pcb-forge",
+  "name": "pcbforge",
   "version": "0.3.0",
   "description": "",
   "homepage": "https://github.com/David207025/PCB-Forge#readme",
@@ -15,10 +15,10 @@
   "type": "commonjs",
   "main": "package-extension.js",
   "scripts": {
-    "build": "pnpm --filter pcb-forge run build:webview && pnpm --filter pcb-forge run compile",
+    "build": "pnpm --filter pcbforge run build:webview && pnpm --filter pcbforge run compile",
     "deploy": "pnpm build && node deploy-extension.js",
-    "build:webview": "pnpm --filter pcb-forge run build:webview",
-    "compile:extension": "pnpm --filter pcb-forge run compile",
+    "build:webview": "pnpm --filter pcbforge run build:webview",
+    "compile:extension": "pnpm --filter pcbforge run compile",
     "package": "node package-extension.js",
     "docs": "node generate-docs.js"
   }

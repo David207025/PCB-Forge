@@ -63,12 +63,12 @@ try {
   // ── Step 3: Build React web-ui and copy assets into extension/dist/ ────────
   // Delegates to extension/build-webview.js via the build:webview script.
   console.log('\n🏗️ Building Web UI...');
-  run('pnpm --filter pcb-forge run build:webview', rootDir);
+  run('pnpm --filter pcbforge run build:webview', rootDir);
 
   // ── Step 4: Compile extension TypeScript ───────────────────────────────────
   // Output goes to extension/out/ as specified by extension/tsconfig.json.
   console.log('\n⚙️ Compiling Extension TypeScript...');
-  run('pnpm --filter pcb-forge run compile', rootDir);
+  run('pnpm --filter pcbforge run compile', rootDir);
 
   // ── Step 5: Package into a VSIX using vsce ─────────────────────────────────
   // The .vscodeignore file controls what ends up inside the archive.
@@ -76,10 +76,10 @@ try {
   if (!fs.existsSync(buildDir)) {
     fs.mkdirSync(buildDir, {recursive: true});
   }
-  const outputPath = path.join(buildDir, `pcb-forge-${version}.vsix`);
+  const outputPath = path.join(buildDir, `pcbforge-${version}.vsix`);
   run(`npx @vscode/vsce package --out "${outputPath}"`, extensionDir);
 
-  console.log(`\n✅ SUCCESS: Extension packaged at: build/pcb-forge-${version}.vsix`);
+  console.log(`\n✅ SUCCESS: Extension packaged at: build/pcbforge-${version}.vsix`);
 } catch (err) {
   console.error('\n❌ Packaging failed:', err.message);
   process.exit(1);

@@ -1,7 +1,7 @@
 {
   "$schema": "file:///Users/davidvacaroiu/.pcb-forge/templates/generated/htl.schema.json",
   "global_fields": {
-    "betreuer": "SreS",
+    "betreuer": "SteK",
     "date": "09.09.2026",
     "document_status": "Prototyp",
     "gepr": "VacD",
@@ -12,8 +12,8 @@
     "revision": "1",
     "name": "David Vacaroiu",
     "scale": "1:1",
-    "share": "SreS",
-    "subtitle": "OmniControl",
+    "share": "SteK",
+    "subtitle": "Venturi",
     "title": "",
     "tolerance": "",
     "version": "1.0"
@@ -32,7 +32,7 @@
         "page": "1",
         "pages": "1"
       },
-      "path": "/Users/davidvacaroiu/Documents/_School_/Maturaprojekt/Venturi/Hardware/Venturi_MainPCB/Venturi_MainPCB.kicad_sch"
+      "path": "./KiCad/Venturi_MainPCB/Venturi_MainPCB.kicad_sch"
     },
     {
       "variant": "default",
@@ -50,7 +50,7 @@
         "page": "1",
         "pages": "1"
       },
-      "path": "/Users/davidvacaroiu/Documents/_School_/Maturaprojekt/Venturi/Hardware/Venturi_MainPCB/Venturi_MainPCB.kicad_pcb;F.Cu,Edge.Cuts"
+      "path": "./KiCad/Venturi_MainPCB/Venturi_MainPCB.kicad_pcb;F.Cu,Edge.Cuts"
     },
     {
       "variant": "default",

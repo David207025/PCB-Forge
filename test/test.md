@@ -3,4 +3,4 @@ some text
 ## Subtitle
 some other text
 
-![Test image](./image.jpeg)
+![Test image](./image.png)

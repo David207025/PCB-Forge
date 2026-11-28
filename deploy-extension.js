@@ -53,7 +53,7 @@ try {
     throw new Error(`Could not find extension package.json at ${extensionPkgPath}`);
   }
   const extensionPkg = JSON.parse(fs.readFileSync(extensionPkgPath, 'utf8'));
-  // The full extension identifier is "<publisher>.<name>" e.g. "vacaroiudavid.pcb-forge"
+  // The full extension identifier is "<publisher>.<name>" e.g. "vacaroiudavid.pcbforge"
   const extensionId = `${extensionPkg.publisher}.${extensionPkg.name}`;
   const version = extensionPkg.version;
 
@@ -61,7 +61,7 @@ try {
   if (!fs.existsSync(buildDir)) {
     fs.mkdirSync(buildDir, { recursive: true });
   }
-  const outputPath = path.join(buildDir, `pcb-forge-${version}.vsix`);
+  const outputPath = path.join(buildDir, `pcbforge-${version}.vsix`);
 
   // Remove a stale VSIX from a previous run to avoid vsce complaining
   if (fs.existsSync(outputPath)) {
