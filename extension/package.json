@@ -1,7 +1,7 @@
 {
   "publisher": "vacaroiudavid",
   "name": "pcbforge",
-  "displayName": "PCB Forge",
+  "displayName": "PCB-Forge",
   "description": "Next-gen PCB design tool for VS Code",
   "version": "0.3.0",
   "icon": "images/icon.png",

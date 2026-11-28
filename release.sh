@@ -172,4 +172,3 @@ git push origin "$TAG"
 
 echo ""
 echo "🎉 Local builds uploaded and tag $TAG pushed!"
-echo "   GitHub Actions (ubuntu-22.04) will now generate installers, publish the release, and update Homebrew."
